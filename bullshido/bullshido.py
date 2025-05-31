@@ -335,20 +335,26 @@ class Bullshido(commands.Cog):
         last_action = user_data.get(f"last_{last_action_key}")
         if last_action:
             last_action_time = datetime.strptime(last_action, "%Y-%m-%d %H:%M:%S")
-            if current_time - last_action_time > timedelta(days=2):
-                # Apply penalty if the user missed a day
-                new_level = max(1, user_data[level_key] - 20)
+            # Calculate how many full 48-hour periods have passed since last action
+            time_diff = current_time - last_action_time
+            missed_periods = time_diff.days // 2  # 2 days = 48 hours
+            if missed_periods > 0:
+                # Apply penalty for each missed period
+                penalty = 20 * missed_periods
+                new_level = max(1, user_data[level_key] - penalty)
                 await self.config.user_from_id(user_id)[level_key].set(new_level)
                 self.logger.info(
-                    f"User {user_id} has lost 20 points in their {level_key.replace('_', ' ')} due to inactivity."
+                    f"User {user_id} has lost {penalty} points in their {level_key.replace('_', ' ')} due to {missed_periods} missed 48-hour periods."
                 )
                 user = self.bot.get_user(user_id)
                 if user:
                     await user.send(
-                        f"You've lost 20 points in your {level_key.replace('_', ' ')} due to inactivity."
+                        f"You've lost {penalty} points in your {level_key.replace('_', ' ')} due to inactivity ({missed_periods} missed 48-hour periods)."
                     )
+                # Update last_action time to the most recent penalty time
+                new_last_action_time = last_action_time + timedelta(days=missed_periods * 2)
                 await self.config.user_from_id(user_id)[f"last_{last_action_key}"].set(
-                    current_time.strftime("%Y-%m-%d %H:%M:%S")
+                    new_last_action_time.strftime("%Y-%m-%d %H:%M:%S")
                 )
 
     async def update_intimidation_level(self, user: discord.Member):

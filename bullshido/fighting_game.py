@@ -495,9 +495,14 @@ class FightingGame:
             # Determine the attacker and defender
             attacker, defender, attacker_data, defender_data = self.determine_attacker_defender()
 
-            # Get the stamina and training levels of the attacker and defender
-            attacker_stamina = attacker_data["stamina_level"]
-            defender_stamina = defender_data["stamina_level"]
+            # Use current stamina values, not config values
+            if attacker == self.player1:
+                attacker_stamina = self.player1_stamina
+                defender_stamina = self.player2_stamina
+            else:
+                attacker_stamina = self.player2_stamina
+                defender_stamina = self.player1_stamina
+
             attacker_training = attacker_data["training_level"]
             defender_training = defender_data["training_level"]
             attacker_intimidation = attacker_data["intimidation_level"]
@@ -854,22 +859,23 @@ class FightingGame:
 
             # Generate fight image and narrative
             fight_image_path = await self.generate_fight_image()
+            image_url = await self.upload_image_and_get_url(fight_image_path)
             if self.challenge:
                 narrative = generate_hype_challenge(self.user_config, str(self.player1.id), str(self.player2.id), self.player1.display_name, self.player2.display_name, self.wager)
             else:
                 narrative = generate_hype(self.user_config, str(self.player1.id), str(self.player2.id), self.player1.display_name, self.player2.display_name)
 
-            # Create and send embed message
+            # Create and send embed message (no file attached, just the image URL)
             embed = discord.Embed(
                 title=f"{self.player1.display_name} vs {self.player2.display_name}",
                 description=f"{narrative}",
                 color=0xFF0000
             )
-            file = discord.File(fight_image_path, filename="fight_image.png")
-            embed.set_image(url="attachment://fight_image.png")
-            self.embed_message = await self.channel.send(file=file, embed=embed)
+            embed.set_image(url=image_url)
+            self.embed_message = await self.channel.send(embed=embed)
             await asyncio.sleep(15)
             embed.description = ""
+            embed.set_image(url=None)  # Remove the image so it doesn't show again
             await self.embed_message.edit(embed=embed)
             # Update health bars and display fight start message
             await self.update_health_bars(0, "The fight is about to begin!", "Ready? FIGHT!")
@@ -926,5 +932,12 @@ class FightingGame:
         except Exception as e:
             self.bullshido_cog.logger.error(f"Error during start_game: {e}")
             raise e
+
+    async def upload_image_and_get_url(self, image_path):
+        # Upload the image to the channel and get the CDN URL
+        msg = await self.channel.send(file=discord.File(image_path, filename="fight_image.png"))
+        url = msg.attachments[0].url
+        await msg.delete()  # Delete the message to keep the channel clean
+        return url
 
 
