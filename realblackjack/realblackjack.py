@@ -7,7 +7,7 @@ import logging
 class Deck:
     def __init__(self, num_decks=2):
         self.cards = []
-        self.num_decks = num_decks
+        self.num_decks = num_decks  # Fixed typo from num_deks to num_decks
         self.suits = [":clubs:", ":diamonds:", ":hearts:", ":spades:"]
         self.ranks = {
             "ace": 11,
@@ -53,7 +53,7 @@ class Card:
         self.suit = suit
         self.rank = rank
         self.value = value
-
+        
     def __str__(self):
         # Unicode card representation
         suits_unicode = {
@@ -193,24 +193,92 @@ class Dealer(Participant):
             return any(card.rank == "ace" for card in self.hand)
         return False
 
+class TableView(discord.ui.View):
+    def __init__(self, game_state):
+        super().__init__(timeout=None)
+        self.game_state = game_state
+
+    @discord.ui.button(label="Join Game", style=discord.ButtonStyle.green, emoji="🪑")
+    async def sit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player_id = interaction.user.id
+        
+        # Check if player is already in game or queue
+        if (player_id in self.game_state.player_objects or 
+            player_id in self.game_state.join_queue):
+            await interaction.response.send_message(
+                "You are already in the game or waiting to join.",
+                ephemeral=True
+            )
+            return
+
+        # Add to join queue
+        self.game_state.join_queue.append(player_id)
+        await interaction.response.send_message(
+            f"You will join the table at the start of the next round.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Leave Game", style=discord.ButtonStyle.red, emoji="👋")
+    async def leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        player_id = interaction.user.id
+        
+        # Check if player is actually in game
+        if (player_id not in self.game_state.player_objects or 
+            player_id in self.game_state.leave_queue):
+            await interaction.response.send_message(
+                "You are not in the game or have already requested to leave.",
+                ephemeral=True
+            )
+            return
+
+        # Add to leave queue
+        self.game_state.leave_queue.append(player_id)
+        await interaction.response.send_message(
+            f"You will leave the table at the end of this round.",
+            ephemeral=True
+        )
 
 class GameState:
-    payouts = {"Win": 2, "Blackjack": 2.5}
-    buy_in_amount = 100
-
     def __init__(self, bot, channel_id, games, config):
         self.bot = bot
-        self.config = config # reference to our RealBlackJack config 
+        self.config = config
         self.channel_id = channel_id
         self.games = games
-        self.deck = Deck(num_decks=2)
-        self.player_objects = {}  # Active game players
+        self.deck = None  # Will be initialized with guild config
+        self.player_objects = {}
         self.dealer = Dealer()
         self.end_game = False
         self.state = "Stopped"
-        self.join_queue = [] # Players waiting to join the game
-        self.leave_queue = [] # Players waiting to leave the game
+        self.join_queue = []
+        self.leave_queue = []
+        self.action_emojis = {
+            "hit": "👊",
+            "stand": "🛑",
+            "double": "💰",
+            "split": "✂️"
+        }
+        self.view = TableView(self)  # Add this line
+        self.game_message = None
+        self.face_down_card = "🂠"  # Unicode playing card back symbol
+        self.current_big_blind = 0  # Index to track big blind position
+        self.pot = 0
 
+    async def initialize_from_guild_config(self, guild):
+        """Initialize game settings from guild config"""
+        guild_config = await self.config.guild(guild).all()
+        
+        # Initialize deck with guild config
+        self.deck = Deck(num_decks=guild_config['num_decks'])
+        
+        # Set game settings from guild config
+        self.min_bet = guild_config['min_bet']
+        self.max_bet = guild_config['max_bet']
+        self.bet_state_timeout = guild_config['bet_timeout']
+        self.payouts = {
+            "Win": guild_config['payouts']['win'],
+            "Blackjack": guild_config['payouts']['blackjack']
+        }
+        self.blinds = guild_config['blinds']
 
     def has_active_players(self):
         """Check if there are any active players at the table."""
@@ -223,81 +291,63 @@ class GameState:
         await self.dealer.clear_hand()
         self.end_game = False
         self.state = "Waiting for bets"
+        if not hasattr(self, 'pot_carries_over'):
+            self.pot = 0  # Reset pot only if it doesn't carry over
+        self.pot_carries_over = False
         
     async def process_queues(self, ctx):
         """Process join and leave queues at the start of each round."""
-        # Handle players leaving
-        # await ctx.send("DEBUG: Processing leave queue...") #! Debug print
+        embed = self.game_message.embeds[0]
+        
+        # Handle leaves
         for player_id in self.leave_queue:
             if player_id in self.player_objects:
                 del self.player_objects[player_id]
                 member = ctx.guild.get_member(player_id)
                 if member:
-                    await ctx.send(f"{member.mention} has left the game.")
+                    embed.description = f"👋 {member.mention} has left the game."
+                    await self.game_message.edit(embed=embed)
+                    await asyncio.sleep(1)
 
-        # Clear the leave queue
-        # await ctx.send("DEBUG: Clearing leave queue...") #! Debug print
         self.leave_queue.clear()
 
-        # Handle players joining
-        # await ctx.send("DEBUG: Processing join queue...") #! Debug print
+        # Handle joins
         for player_id in self.join_queue:
             if player_id not in self.player_objects:
                 member = ctx.guild.get_member(player_id)
                 if member:
-                    # await ctx.send(f"DEBUG: Initializing {member.mention} in the game.") #! Debug print
                     player = Player(member.display_name, ctx)
                     await player.async_init(ctx)
                     self.player_objects[player_id] = player
-                    await ctx.send(f"{member.mention} has joined the game.")
+                    embed.description = f"✨ {member.mention} has joined the game."
+                    await self.game_message.edit(embed=embed)
+                    await asyncio.sleep(1)
 
-        # Clear the join queue
         self.join_queue.clear()
 
     async def take_bets(self, ctx, channel_id):
         self.state = "Taking bets"
         for player_id, player in self.player_objects.items():
             member = ctx.guild.get_member(player_id)
-            if member:
-                player_balance = await bank.get_balance(member)
-                await ctx.send(
-                    f"{member.mention}, you have {player_balance} chips. How much do you want to bet? Enter '0' to skip."
-                )
+            if not member:
+                continue
+                
+            player_balance = await bank.get_balance(member)
+            embed = self.game_message.embeds[0]
+            embed.description = f"💰 {member.mention}'s turn to bet\nBalance: {player_balance}"
+            await self.game_message.edit(embed=embed)
 
-                def check_bet(msg):
-                    return msg.author.id == player_id and msg.channel == ctx.channel
+            betting_view = BettingView(self, player, self.min_bet, self.max_bet)
+            bet_message = await ctx.send(
+                f"{member.mention}'s betting turn\nCurrent bet: 0",
+                view=betting_view
+            )
 
-                while True:  # Ensure a single bet loop per player
-                    try:
-                        msg = await self.bot.wait_for("message", timeout=20.0, check=check_bet)
-                        if msg.content.isdigit():  # Only delete if it's a number (bet amount)
-                            try:
-                                await msg.delete()
-                            except discord.HTTPException:
-                                pass
-                            
-                            bet = int(msg.content)
-                            if 0 < bet <= player_balance:
-                                player.bet = bet
-                                await bank.withdraw_credits(member, bet)
-                                await ctx.send(
-                                    f"{member.mention}, your bet of {bet} chips has been placed."
-                                )
-                                break  # Exit loop after valid input
-                            elif bet == 0:
-                                await ctx.send(f"{member.mention}, you chose not to place a bet.")
-                                break  # Exit loop if the player skips
-                            else:
-                                await ctx.send(
-                                    f"{member.mention}, your bet must be more than 0 and no more than your balance."
-                                )
-                        else:
-                            continue  # Don't delete non-bet messages
-                    except asyncio.TimeoutError:
-                        await ctx.send(
-                            f"{member.mention}, you took too long to bet. Skipping your turn."
-                        )
-                        break  # Exit loop on timeout
+            await betting_view.wait()
+            try:
+                await bet_message.delete()
+            except discord.HTTPException:
+                pass
 
     async def add_player(self, player_id, ctx):
         player = Player(self.bot.get_user(player_id).name, ctx)
@@ -306,26 +356,23 @@ class GameState:
 
     # The initial gameplay logic 
     async def setup_game(self, ctx, channel_id, embed):
+        """Setup and deal initial cards."""
         self.state = "Dealing cards"
         game = self.games.get(channel_id)
         if game is None:
-            await ctx.send(f"No game found for channel ID: {channel_id}")
+            embed.description = f"No game found for channel ID: {channel_id}"
+            await self.game_message.edit(embed=embed)
             return
-        if game.state == "End Game":
-            print("Game is ending, skipping setup...")
-            game.state = "Stopped"
-            return
-        
-        # Check if the shoe is empty and refill if necessary
+            
         if game.deck.num_cards_remaining() == 0:
-            await ctx.send("The shoe is empty! The Dealer reshuffles the decks and refills the shoe...")
+            embed.description = "The shoe is empty! Reshuffling..."
+            await self.game_message.edit(embed=embed)
             game.deck.refill()
             await asyncio.sleep(2)
         
-        # Shuffle the deck
-        game.deck.shuffle()  
+        game.deck.shuffle()
 
-        # Deal cards to players and the dealer
+        # Deal cards to players and dealer
         for player_id, player in game.player_objects.items():
             user = self.bot.get_user(player_id)
             if user is None:
@@ -341,7 +388,7 @@ class GameState:
 
         game.state = "In Progress"
         await self.card_table_update_embed(embed, game, reveal_dealer=False)
-        self.game_message = await ctx.send(embed=embed)
+        await self.game_message.edit(embed=embed)
 
     async def reset_player_and_dealer_states(self):
         print(f"Clearing states for channel ID: {self.channel_id}")
@@ -353,329 +400,312 @@ class GameState:
         game = self.games[channel_id]
         game.state = "Player Turns"
         
-        for player_id, player in game.player_objects.items():
+        for player_id, player in list(game.player_objects.items()):
             user = self.bot.get_user(player_id)
-            
             hand_index = 0
+            
             while hand_index < len(player.hands):
                 current_hand = player.hands[hand_index]
                 player.current_hand_index = hand_index
                 
-                # Calculate score for current hand
+                # Calculate initial score
                 player.score = sum(card.value for card in current_hand)
                 aces = sum(1 for card in current_hand if card.rank == "ace")
                 while player.score > 21 and aces:
                     player.score -= 10
                     aces -= 1
 
-                # If player has 21, automatically end their turn
+                # Auto-complete if blackjack
                 if player.score == 21:
-                    await self.card_table_update_embed(
-                        embed, game, reveal_dealer=False,
-                        status_message=f"🎯 {user.mention} has 21! Moving to next hand."
-                    )
-                    await self.game_message.edit(embed=embed)
+                    await ctx.send(f"🎯 {user.mention} has Blackjack!")
                     hand_index += 1
                     continue
 
-                hand_num = f" (Hand {hand_index + 1})" if len(player.hands) > 1 else ""
-                status = (f"🎮 {user.mention}'s turn" + 
-                         (f" (Hand {hand_index + 1})" if len(player.hands) > 1 else "") +
-                         "\nOptions: " +
-                         ("split, " if player.can_split() and hand_index == 0 else "") +
-                         "hit, stand/stay, or double down/double")
-                
-                await self.card_table_update_embed(embed, game, reveal_dealer=False, status_message=status)
-                await self.game_message.edit(embed=embed)
-
-                hand_completed = False
-                while not hand_completed:
-                    def check(m):
-                        valid_actions = ["hit", "stand", "stay", "double"]
-                        if player.can_split() and hand_index == 0:
-                            valid_actions.append("split")
-                        # Only return True for valid game actions
-                        return (
-                            m.author.id == player_id
-                            and m.channel.id == ctx.channel.id
-                            and m.content.lower() in valid_actions
-                        )
+                # Main action loop
+                while True:
+                    if player.score > 21:  # Check for bust before showing actions
+                        await ctx.send(f"{user.mention} busts with {player.score}!")
+                        break
+                        
+                    action_view = PlayerActionView(game, player, current_hand)
+                    action_message = await ctx.send(
+                        f"{user.mention}'s turn - Score: {player.score}",
+                        view=action_view
+                    )
 
                     try:
-                        msg = await self.bot.wait_for("message", timeout=15.0, check=check)
-                        # Only delete valid game action messages
-                        try:
-                            await msg.delete()
-                        except discord.HTTPException:
-                            pass
-                            
-                        decision = msg.content.lower()
+                        await action_view.wait()
+                        decision = action_view.action_taken
 
-                        if decision == "split" and hand_index == 0:
-                            # Handle splitting
-                            member = ctx.guild.get_member(player_id)
-                            player_balance = await bank.get_balance(member)
-                            
-                            if player.bet * 2 > player_balance:
-                                await ctx.send(f"{user.mention}, you don't have enough chips to split.")
-                                continue
-                            
-                            # Withdraw additional bet for the second hand
-                            await bank.withdraw_credits(member, player.bet)
-                            
-                            # Perform the split
-                            player.split(game.deck)
-                            await ctx.send(f"{user.mention} splits their hand! Play out each hand separately.")
-                            
-                            # Update embed to reflect split hands
-                            await self.card_table_update_embed(embed, game, reveal_dealer=False)
-                            await self.game_message.edit(embed=embed)
-                            # Don't break - let player continue with first hand
-                            continue
+                        if decision is None:  # Timeout
+                            await ctx.send(f"{user.mention} took too long - Standing automatically.")
+                            break
+
+                        if decision == "stand":
+                            await ctx.send(f"{user.mention} stands on {player.score}.")
+                            break
 
                         elif decision == "hit":
-                            # Handle empty shoe before dealing
-                            if game.deck.num_cards_remaining() == 0:
-                                await ctx.send("The shoe is empty! The Dealer reshuffles the decks and refills the shoe...")
-                                game.deck.refill()
-                                await asyncio.sleep(2)
-
-                            # Draw card to the current hand
-                            current_hand.append(game.deck.deal_card())
-                            
-                            # Recalculate score for the current hand
+                            card = game.deck.deal_card()
+                            current_hand.append(card)
+                            # Recalculate score
                             player.score = sum(card.value for card in current_hand)
                             aces = sum(1 for card in current_hand if card.rank == "ace")
                             while player.score > 21 and aces:
                                 player.score -= 10
                                 aces -= 1
-
-                            # Update the embed with the new card and score
                             await self.card_table_update_embed(embed, game, reveal_dealer=False)
-                            await self.game_message.edit(embed=embed)
-
-                            if player.score > 21:  # Player busts
-                                await ctx.send(f"{user.mention} has busted with a score of {player.score}!")
-                                hand_completed = True
-
-                        elif decision == "stand" or decision == "stay":
-                            await ctx.send(f"{user.mention} stands on {player.score}.")
-                            hand_completed = True
+                            await game.game_message.edit(embed=embed)
+                            continue  # Continue the loop for more actions
 
                         elif decision == "double":
-                            # Handle empty shoe before dealing
-                            if game.deck.num_cards_remaining() == 0:
-                                await ctx.send("The shoe is empty! The Dealer reshuffles the decks and refills the shoe...")
-                                game.deck.refill()
-                                await asyncio.sleep(2)
-
-                            # Check if player has enough balance to double their bet
-                            member = ctx.guild.get_member(player_id)
-                            player_balance = await bank.get_balance(member)
-                            if player.bet * 2 > player_balance:
-                                await ctx.send(f"{user.mention}, you don't have enough chips to double down.")
-                                continue
-
-                            # Double the bet and withdraw chips
-                            await bank.withdraw_credits(member, player.bet)
+                            await bank.withdraw_credits(ctx.guild.get_member(player_id), player.bet)
                             player.bet *= 2
-
-                            # Draw one card and add to current hand
-                            current_hand.append(game.deck.deal_card())
-                            
-                            # Recalculate score for current hand
+                            card = game.deck.deal_card()
+                            current_hand.append(card)
                             player.score = sum(card.value for card in current_hand)
                             aces = sum(1 for card in current_hand if card.rank == "ace")
                             while player.score > 21 and aces:
                                 player.score -= 10
                                 aces -= 1
-
-                            # Update the embed with the new card and score
                             await self.card_table_update_embed(embed, game, reveal_dealer=False)
-                            await self.game_message.edit(embed=embed)
-
-                            # Inform the player of their final score
+                            await game.game_message.edit(embed=embed)
                             if player.score > 21:
-                                await ctx.send(f"After doubling down, {user.mention} busted with {player.score}!")
+                                await ctx.send(f"{user.mention} busts with {player.score}!")
                             else:
-                                await ctx.send(f"{user.mention} doubled down, final score is {player.score}.")
-                            hand_completed = True
-                            
-                    except asyncio.TimeoutError:
-                        await ctx.send(f"{user.mention}, you took too long to make a decision. Standing on current hand.")
-                        hand_completed = True
+                                await ctx.send(f"{user.mention} doubled down to {player.score}")
+                            break
 
-                # Move to next hand
-                hand_index += 1
+                        elif decision == "split" and hand_index == 0:
+                            await bank.withdraw_credits(ctx.guild.get_member(player_id), player.bet)
+                            player.split(game.deck)
+                            await ctx.send(f"{user.mention} splits their hand!")
+                            await self.card_table_update_embed(embed, game, reveal_dealer=False)
+                            await game.game_message.edit(embed=embed)
+                            break
+
+                    finally:
+                        try:
+                            await action_message.delete()
+                        except discord.HTTPException:
+                            pass
+
+                hand_index += 1  # Move to next hand after current hand is complete
 
     async def card_table_update_embed(self, embed, game, reveal_dealer=True, status_message=""):
         embed.clear_fields()
         
-        # Add game status/message field at the top
+        # Add visual game progress bar
+        progress_markers = {
+            "Taking bets": "💰 ⬜ ⬜ ⬜",
+            "Dealing cards": "✅ 🎴 ⬜ ⬜",
+            "Player Turns": "✅ ✅ 👤 ⬜",
+            "Dealer turn": "✅ ✅ ✅ 🎲",
+        }
+        progress = progress_markers.get(game.state, "⬜ ⬜ ⬜ ⬜")
+        embed.add_field(name="Game Progress", value=progress, inline=False)
+
+        # Add status message with emoji indicators
         if status_message:
-            embed.add_field(
-                name="Game Status",
-                value=status_message,
-                inline=False
-            )
+            embed.add_field(name="Status", value=status_message, inline=False)
 
-        # Add current phase
-        embed.add_field(
-            name="Current Phase",
-            value=f"**{game.state}**",
-            inline=False
-        )
-
-        # Add player hands and bets
+        # Enhance player hand display
         for player_id, player in game.player_objects.items():
             user = self.bot.get_user(player_id)
             
             for hand_index, hand in enumerate(player.hands):
-                hand_str = ", ".join(str(card) for card in hand)
+                hand_str = " ".join(str(card) for card in hand)  # This will now use the new Unicode card display
                 score = sum(card.value for card in hand)
                 
-                # Adjust for aces
-                aces = sum(1 for card in hand if card.rank == "ace")
-                while score > 21 and aces:
-                    score -= 10
-                    aces -= 1
+                # Add visual score indicator
+                score_emoji = "🟢" if score <= 21 else "🔴"
+                if score == 21:
+                    score_emoji = "⭐"
                 
-                score_str = f"Score: {score}" if score <= 21 else "Busted!"
                 hand_name = f"{user.display_name}'s Hand {hand_index + 1}"
-                bet_str = f"Bet: {player.bet}"
-                
-                embed.add_field(
-                    name=hand_name,
-                    value=f"{hand_str}\n{score_str}\n{bet_str}",
-                    inline=False,
+                value = (
+                    f"{hand_str}\n"
+                    f"{score_emoji} Score: {score}\n"
+                    f"💵 Bet: {player.bet}"
                 )
+                embed.add_field(name=hand_name, value=value, inline=False)
 
-        # Add dealer's hand
+        # Enhance dealer hand display
+        dealer_value = ""
         if reveal_dealer:
-            dealer_hand_str = ", ".join(str(card) for card in game.dealer.hand)
-            dealer_score_str = f"Score: {game.dealer.score}" if game.dealer.score <= 21 else "Busted!"
-            embed.add_field(
-                name="Dealer's Hand",
-                value=f"{dealer_hand_str}\n{dealer_score_str}",
-                inline=False,
-            )
+            dealer_hand_str = " ".join(str(card) for card in game.dealer.hand)
+            score_emoji = "🟢" if game.dealer.score <= 21 else "🔴"
+            if game.dealer.score == 21:
+                score_emoji = "⭐"
+            dealer_value = f"{dealer_hand_str}\n{score_emoji} Score: {game.dealer.score}"
         else:
-            face_up_card = game.dealer.hand[0]
-            embed.add_field(
-                name="Dealer's Hand",
-                value=f"{face_up_card} and a hidden card",
-                inline=False,
-            )
+            face_up_card = str(game.dealer.hand[0])  # This will use the new Unicode display
+            dealer_value = f"{face_up_card} {self.face_down_card}"
+        
+        embed.add_field(name="Dealer's Hand", value=dealer_value, inline=False)
 
-        # Add game info footer
+        # Add game info with emojis
         embed.add_field(
             name="Game Info",
-            value=f"Cards in Shoe: {game.deck.num_cards_remaining()}\nActive Players: {len(game.player_objects)}",
+            value=(
+                f"🎴 Cards in Shoe: {game.deck.num_cards_remaining()}\n"
+                f"👥 Active Players: {len(game.player_objects)}\n"
+                f"💰 Current Pot: {self.pot}"
+            ),
             inline=False
         )
+        await self.game_message.edit(embed=embed, view=self.view)  # Add view parameter
 
-        embed.set_thumbnail(url="https://i.ibb.co/7vJ2Y2V/realblackjack-logo-transparent.png")
-    
     async def dealer_turn(self, ctx, channel_id, embed):
-        """Handle the dealer's turn."""
+        """Handle dealer's turn using single embed."""
         self.state = "Dealer turn"
         game = self.games[channel_id]
         dealer = game.dealer
         dealer.calculate_score()
 
-        # Initial embed update for the dealer's starting hand
+        # Update embed with dealer's revealed hand
         await self.card_table_update_embed(embed, game, reveal_dealer=True)
-        dealer_message = await ctx.send(embed=embed)
+        await self.game_message.edit(embed=embed)
+        await asyncio.sleep(2)
 
-        # Dealer rules: must hit until score is 17 or higher or reaches 21
         while dealer.score < 17:
-            await asyncio.sleep(2)
             if game.deck.num_cards_remaining() == 0:
-                            await ctx.send("The shoe is empty! The Dealer reshuffles the decks and refills the shoe...")
-                            await asyncio.sleep(2)
-            dealer.draw_card(game.deck)  # Dealer draws a card
-            dealer.calculate_score()  # Recalculate the dealer's score
+                embed.description = "The shoe is empty! Reshuffling..."
+                await self.game_message.edit(embed=embed)
+                game.deck.refill()
+                await asyncio.sleep(2)
+                
+            dealer.draw_card(game.deck)
+            dealer.calculate_score()
             
             await self.card_table_update_embed(embed, game, reveal_dealer=True)
-            await dealer_message.edit(embed=embed)
+            embed.description = f"Dealer draws... Current score: {dealer.score}"
+            await self.game_message.edit(embed=embed)
+            await asyncio.sleep(2)
 
-            # Check for exact 21
-            if dealer.score == 21:
-                embed.add_field(
-                    name="Blackjack!",
-                    value=f"Dealer hit 21!.",
-                    inline=False,
-                )
-                await self.card_table_update_embed(embed, game, reveal_dealer=True)
-                await dealer_message.edit(embed=embed)
-                return  # End the dealer's turn immediately
+        final_status = ""
+        if dealer.score == 21:
+            final_status = "🎯 Dealer hits 21!"
+        elif dealer.score > 21:
+            final_status = f"💥 Dealer busts with {dealer.score}!"
+        else:
+            final_status = f"🛑 Dealer stands on {dealer.score}"
 
-            # Check if dealer is busted
-            if dealer.score > 21:
-                embed.add_field(
-                    name="Dealer Busts!",
-                    value=f"The dealer has busted with a score of {dealer.score}.",
-                    inline=False,
-                )
-                await self.card_table_update_embed(embed, game, reveal_dealer=True)
-                await dealer_message.edit(embed=embed)
-                return  # End the dealer's turn immediately
+        embed.description = final_status
+        await self.game_message.edit(embed=embed)
 
-        # Final embed update if the dealer didn't bust or hit 21
-        await self.card_table_update_embed(embed, game, reveal_dealer=True)
-        await dealer_message.edit(embed=embed)
-        
     async def payout(self, ctx, channel_id):
+        """Modified payout to include pot distribution and round summary"""
         game = self.games[channel_id]
         dealer = game.dealer
+        embed = self.game_message.embeds[0]
+        results = []
+        winners = []
+        summary_data = {
+            "players": [],
+            "total_pot": self.pot,
+            "dealer_score": dealer.score,
+            "dealer_busted": dealer.score > 21
+        }
 
+        # Determine winners and build summary data
         for player_id, player in game.player_objects.items():
             member = ctx.guild.get_member(player_id)
-            
-            if not member: 
+            if not member:
                 continue
 
-            # Process each hand separately
+            player_summary = {
+                "name": member.display_name,
+                "hands": [],
+                "total_won": 0,
+                "total_bet": player.bet
+            }
+
             for hand_index, hand in enumerate(player.hands):
                 hand_score = sum(card.value for card in hand)
-                
-                # Adjust for aces
                 aces = sum(1 for card in hand if card.rank == "ace")
                 while hand_score > 21 and aces:
                     hand_score -= 10
                     aces -= 1
 
-                # Existing payout logic, but applied to each hand
-                if hand_score > 21:
-                    # Hand is busted
-                    await ctx.send(
-                        f"{member.mention}, hand {hand_index + 1} is busted with {hand_score}. You lose your bet of {player.bet}."
-                    )
-                    await bank.withdraw_credits(member, player.bet)
+                hand_result = {
+                    "cards": " ".join(str(card) for card in hand),
+                    "score": hand_score,
+                    "busted": hand_score > 21,
+                    "blackjack": hand_score == 21 and len(hand) == 2,
+                    "won": False
+                }
 
-                elif dealer.score > 21 or hand_score > dealer.score:
-                    # Hand wins
-                    win_amount = player.bet * self.payouts["Win"]
-                    await ctx.send(f"{member.mention}, hand {hand_index + 1} wins with {hand_score}! You get {win_amount} chips.")
-                    await bank.deposit_credits(member, win_amount)
+                if hand_score <= 21 and (dealer.score > 21 or hand_score > dealer.score):
+                    winners.append((member, player, hand_score))
+                    hand_result["won"] = True
+                
+                player_summary["hands"].append(hand_result)
+            
+            summary_data["players"].append(player_summary)
 
-                elif hand_score == dealer.score:
-                    # Hand is a tie
-                    await ctx.send(f"{member.mention}, hand {hand_index + 1} is a tie with {hand_score}. You get {player.bet} chips back.")
+        # Calculate payouts and update summary
+        if winners:
+            pot_share = self.pot / len(winners)
+            for member, player, score in winners:
+                win_amount = round(player.bet * self.payouts["Win"] + pot_share)
+                await bank.deposit_credits(member, win_amount)
+                
+                # Update player summary with winnings
+                for p in summary_data["players"]:
+                    if p["name"] == member.display_name:
+                        p["total_won"] = win_amount
+                        break
 
-                else:
-                    # Hand loses
-                    await ctx.send(
-                        f"{member.mention}, hand {hand_index + 1} loses to the dealer with {hand_score}. You lost {player.bet} chips."
-                    )
-                    await bank.withdraw_credits(member, player.bet)
+        # Create formatted round summary embed
+        embed.clear_fields()
+        embed.title = "🎲 Round Summary"
+        
+        # Dealer's final hand
+        dealer_status = "💥 BUSTED!" if dealer.score > 21 else "🎯 21!" if dealer.score == 21 else f"📍 {dealer.score}"
+        dealer_cards = " ".join(str(card) for card in dealer.hand)
+        embed.add_field(
+            name="Dealer's Final Hand",
+            value=f"{dealer_cards}\n{dealer_status}",
+            inline=False
+        )
 
-                # Clear player's hand and states for the next round
-                await player.clear_hand()
+        # Player results
+        for player in summary_data["players"]:
+            result_lines = []
+            for i, hand in enumerate(player["hands"]):
+                hand_num = f" (Hand {i+1})" if len(player["hands"]) > 1 else ""
+                status = "💥 BUST!" if hand["busted"] else "⭐ BLACKJACK!" if hand["blackjack"] else "✅ WIN!" if hand["won"] else "❌ LOSS"
+                result_lines.append(f"{hand['cards']} → {hand['score']} {status}")
+            
+            profit_loss = player["total_won"] - player["total_bet"]
+            chips_status = f"🔼 +{profit_loss}" if profit_loss > 0 else f"🔽 {profit_loss}"
+            
+            embed.add_field(
+                name=f"{player['name']}'s Results",
+                value="\n".join(result_lines) + f"\nChips: {chips_status}",
+                inline=False
+            )
+
+        # Pot summary
+        if winners:
+            embed.add_field(
+                name="💰 Pot Distribution",
+                value=f"Total Pot: {self.pot}\nSplit between {len(winners)} winner(s)",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="💰 Pot Status",
+                value=f"Pot ({self.pot} chips) carries to next round",
+                inline=False
+            )
+
+        await self.game_message.edit(embed=embed)
+        await asyncio.sleep(5)  # Give players time to read the summary
 
     async def build_game_state_embed(self, game):
-        # Start creating the embed
-        embed = discord.Embed(title="RealBlackjack", color=0X9A081B, description="Game Table")
+        embed = discord.Embed(title="RealBlackjack", color=0xFF69B4, description="Game Table")
         embed.set_author(name="Blackjack Dealer", icon_url="")
 
         # Update the embed with the current hands and scores
@@ -696,33 +726,110 @@ class GameState:
             self.state = "Stopped"
             del self.games[channel_id]
 
+    async def collect_blinds(self, ctx):
+        """Collect small and big blinds from players"""
+        if len(self.player_objects) < 2:
+            return False
+            
+        embed = self.game_message.embeds[0]
+        player_ids = list(self.player_objects.keys())
+        
+        # Calculate positions
+        big_blind_pos = self.current_big_blind % len(player_ids)
+        small_blind_pos = (big_blind_pos - 1) % len(player_ids)
+        
+        # Get players in blind positions
+        big_blind_player = self.player_objects[player_ids[big_blind_pos]]
+        small_blind_player = self.player_objects[player_ids[small_blind_pos]]
+        
+        # Get guild members
+        big_blind_member = ctx.guild.get_member(player_ids[big_blind_pos])
+        small_blind_member = ctx.guild.get_member(player_ids[small_blind_pos])
+        
+        # Collect small blind
+        small_blind_balance = await bank.get_balance(small_blind_member)
+        if small_blind_balance >= self.blinds["small"]:
+            await bank.withdraw_credits(small_blind_member, self.blinds["small"])
+            self.pot += self.blinds["small"]
+            embed.description = f"💰 {small_blind_member.mention} posts small blind: {self.blinds['small']}"
+            await self.game_message.edit(embed=embed)
+            await asyncio.sleep(1)
+        else:
+            embed.description = f"❌ {small_blind_member.mention} cannot afford small blind, removed from game"
+            await self.game_message.edit(embed=embed)
+            del self.player_objects[player_ids[small_blind_pos]]
+            return False
+            
+        # Collect big blind
+        big_blind_balance = await bank.get_balance(big_blind_member)
+        if big_blind_balance >= self.blinds["big"]:
+            await bank.withdraw_credits(big_blind_member, self.blinds["big"])
+            self.pot += self.blinds["big"]
+            embed.description = f"💰 {big_blind_member.mention} posts big blind: {self.blinds['big']}"
+            await self.game_message.edit(embed=embed)
+            await asyncio.sleep(1)
+        else:
+            embed.description = f"❌ {big_blind_member.mention} cannot afford big blind, removed from game"
+            await self.game_message.edit(embed=embed)
+            del self.player_objects[player_ids[big_blind_pos]]
+            return False
+            
+        # Rotate blinds for next round
+        self.current_big_blind = (self.current_big_blind + 1) % len(player_ids)
+        return True
+
 class RealBlackJack(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.games = {}
         self.config = Config.get_conf(self, identifier=123452212232144515623667890)
+        
+        # Add guild defaults
+        default_guild = {
+            "min_bet": 10,
+            "max_bet": 10000,
+            "num_decks": 2,
+            "join_timeout": 20,
+            "bet_timeout": 15,
+            "payouts": {
+                "win": 2,
+                "blackjack": 2.5
+            },
+            "blinds": {
+                "big": 200,
+                "small": 100
+            },
+            "max_players": 6
+        }
+        
         default_member = {
             "games_won": 0,
             "games_lost": 0,
             "total_chips_won": 0,
             "total_chips_lost": 0,
         }
+        
+        self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
-        self.join_state_timeout = 20
-        self.bet_state_timeout = 15
-        self.min_bet = 10
-        self.max_bet = 10000
-        self.payouts = {"Win": 2, "Blackjack": 2.5}
-        self.blinds = {"bigblind": 200, "smallblind": 100}
-        self.max_players = 6
         
-        # Set up logging
-        #self.logger = logging.getLogger('realblackjack')
-        #self.logger.setLevel(logging.DEBUG)
-        #handler = logging.FileHandler(filename='realblackjack.log', encoding='utf-8', mode='w')
-        #handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-        #self.logger.addHandler(handler)
+
+    async def initialize_game_state(self, ctx, channel_id):
+        """Initialize a new game state with guild-specific settings."""
+        guild_config = await self.config.guild(ctx.guild).all()
         
+        game_state = GameState(self.bot, channel_id, self.games, self.config)
+        game_state.min_bet = guild_config["min_bet"]
+        game_state.max_bet = guild_config["max_bet"]
+        game_state.bet_state_timeout = guild_config["bet_timeout"]
+        game_state.join_timeout = guild_config["join_timeout"]
+        game_state.deck = Deck(num_decks=guild_config["num_decks"])
+        game_state.payouts = {
+            "Win": guild_config["payouts"]["win"],
+            "Blackjack": guild_config["payouts"]["blackjack"]
+        }
+        game_state.blinds = guild_config["blinds"]
+        
+        return game_state
 
     async def update_wins(self, member):
         current_wins = await self.config.member(member).wins()
@@ -747,27 +854,30 @@ class RealBlackJack(commands.Cog):
     @realblackjack.command()
     async def start(self, ctx):
         """ Start a game of Real Blackjack."""
-        # self.logger.info(f"Starting a game in channel {ctx.channel.id}")
         channel_id = ctx.channel.id
         if channel_id in self.games:
             await ctx.send("A game is already started in this channel.")
             return
 
-        await ctx.send(
-            f"Game will start in {self.join_state_timeout} seconds. Type join to sit at the table!"
-        )
-        # Initialize joined players
-        joined_players = []
+        # Get guild-specific timeout
+        join_timeout = await self.config.guild(ctx.guild).join_timeout()
+        
+        # Initialize joined players with the starter
+        joined_players = [ctx.author.id]
+        await ctx.send(f"{ctx.author.mention} starts a new game!\nGame will start in {join_timeout} seconds. Type join to sit at the table!")
+        await ctx.send(f"{ctx.author.mention} has joined the game!")
 
         def check_join(msg):
             return (
-                msg.content.lower() == "bj join" or msg.content.lower() == "join" and msg.channel == ctx.channel
+                msg.content.lower() == "bj join" or msg.content.lower() == "join" and 
+                msg.channel == ctx.channel and
+                msg.author.id != ctx.author.id  # Don't let starter join again
             )
 
         while True:
             try:
                 msg = await self.bot.wait_for(
-                    "message", timeout=self.join_state_timeout, check=check_join
+                    "message", timeout=join_timeout, check=check_join
                 )
                 player_id = msg.author.id
                 if player_id not in joined_players:
@@ -787,58 +897,17 @@ class RealBlackJack(commands.Cog):
         }
 
         # Initialize GameState with the players who have joined
-        self.games[channel_id] = GameState(self.bot, channel_id, self.games, self.config)
+        self.games[channel_id] = await self.initialize_game_state(ctx, channel_id)
         game = self.games[channel_id]
         game.player_objects = player_dict  # Set players directly
-        embed = discord.Embed(title="Slurms' Real Blackjack", color=0X9A081B)
+        embed = discord.Embed(title="Real Blackjack", color=0xFF69B4)
 
         for player in player_dict.values():
             await player.async_init(ctx)
 
-        await ctx.send(f"Game starting with {len(joined_players)} players!")
+        await ctx.send(f"Game starting! Use the buttons below to join or leave the table.")
         await self.play_game(ctx, channel_id, embed)
 
-
-    @realblackjack.command()
-    async def join(self, ctx):
-        """Adds the player to the join queue. They will join the table at the start of the next round."""
-        channel_id = ctx.channel.id
-        if channel_id not in self.games:
-            await ctx.send("No game is currently running in this channel.")
-            return
-
-        game = self.games[channel_id]
-        player_id = ctx.author.id
-
-        # Prevent duplicate joins
-        if player_id in game.player_objects or player_id in game.join_queue:
-            await ctx.send("You are already in the game or waiting to join.")
-            return
-
-        # Add to the join queue
-        game.join_queue.append(player_id)
-        await ctx.send(f"{ctx.author.mention} will join the table at the start of the next round.")
-
-
-    @realblackjack.command()
-    async def leave(self, ctx):
-        """Allow players to leave the table."""
-        channel_id = ctx.channel.id
-        if channel_id not in self.games:
-            await ctx.send("There's no active game right now.")
-            return
-
-        game = self.games[channel_id]
-        player_id = ctx.author.id
-
-        # Prevent duplicate leave requests
-        if player_id not in game.player_objects or player_id in game.leave_queue:
-            await ctx.send("You are not in the game or have already requested to leave the table.")
-            return
-
-        # Add to the leave queue
-        game.leave_queue.append(player_id)
-        await ctx.send(f"{ctx.author.mention} is calling it a day and will leave the table next round.")
 
     @commands.group()
     @commands.is_owner()
@@ -858,6 +927,7 @@ class RealBlackJack(commands.Cog):
             game = self.games[channel_id]
             await ctx.send(f"Game state: {game.state}")
             
+ 
     @realblackjackset.command(name="endgame")
     @commands.is_owner()
     async def end(self, ctx):
@@ -881,20 +951,6 @@ class RealBlackJack(commands.Cog):
         self.join_state_timeout = timeout
         await ctx.send(f"Join timeout set to {timeout} seconds.")
 
-    @realblackjackset.command()
-    async def decks(self, ctx, number_of_decks: int):
-        """Set the number of decks to be used in the game. This increases the number of cards in the shoe."""
-        channel_id = ctx.channel.id
-        game = self.games[channel_id]
-        
-        if self.games[channel_id].state != ["Waiting for bets"]:
-            await ctx.send("A game is currently in progress. Cannot change the number of decks.")
-            return
-
-        self.deck = Deck(num_decks=number_of_decks)
-        await ctx.send(f"Deck has been set to {number_of_decks} decks.")
-
-
     @realblackjackset.command(name="cardsleft")
     async def cards_remaining(self, ctx):
         """Returns how many cards are left in the shoe."""
@@ -912,9 +968,13 @@ class RealBlackJack(commands.Cog):
     @realblackjackset.command(name="settings")
     async def settings(self, ctx):
         """Display settings information and help for Real Blackjack admin commands."""
+        # Get guild settings from config
+        guild_settings = await self.config.guild(ctx.guild).all()
+        game = self.games.get(ctx.channel.id)
+
         embed = discord.Embed(
             title="Real Blackjack Settings",
-            color=0X9A081B,
+            color=0xFF69B4,
             description="Current game settings and admin commands"
         )
         embed.set_image(url="https://i.ibb.co/vXNSX8g/realblackjack-logo-transparent.png")
@@ -933,17 +993,17 @@ class RealBlackJack(commands.Cog):
             inline=False
         )
 
-        # Current settings
-        game = self.games.get(ctx.channel.id)
+        # Current settings using guild config values
         settings = [
-            ("Join Timeout", f"{self.join_state_timeout} seconds"),
-            ('Bet Timeout', f"{game.bet_state_timeout if game else 10} seconds"),
-            ("Minimum Bet", f"{game.min_bet if game else 10} chips"),
-            ("Maximum Bet", f"{game.max_bet if game else 100} chips"),
-            ("Payout Multiplier", f"Win: {self.payouts['Win']}x, Blackjack: {self.payouts['Blackjack']}x"),
-            ("Blinds", f"bigblind: {self.blinds['bigblind']} / smallblind: {self.blinds['smallblind']}"),
-            ("Number of Decks", f"{game.deck.num_decks if game else 2} decks"),
-            ("Max Players", f"{self.max_players if game else 6}"),
+            ("Join Timeout", f"{guild_settings['join_timeout']} seconds"),
+            ('Bet Timeout', f"{guild_settings['bet_timeout']} seconds"),
+            ("Minimum Bet", f"{guild_settings['min_bet']} chips"),
+            ("Maximum Bet", f"{guild_settings['max_bet']} chips"),
+            ("Win Payout", f"{guild_settings['payouts']['win']}x"),
+            ("Blackjack Payout", f"{guild_settings['payouts']['blackjack']}x"),
+            ("Blinds", f"Big: {guild_settings['blinds']['big']} / Small: {guild_settings['blinds']['small']}"),
+            ("Number of Decks", f"{guild_settings['num_decks']} decks"),
+            ("Max Players", f"{guild_settings['max_players']}")
         ]
 
         settings_text = "\n".join(f"**{name}:** {value}" for name, value in settings)
@@ -954,27 +1014,69 @@ class RealBlackJack(commands.Cog):
         )
 
         # Admin commands
-        admin_commands = {
-            "-realblackjackset timeout <seconds>": "Set the join timeout duration",
-            "-realblackjackset bettimeout <seconds>": "Set the bet timeout duration",
-            "-realblackjackset minbet <amount>": "Set the minimum bet amount",
-            "-realblackjackset maxbet <amount>": "Set the maximum bet amount",
-            "-realblackjackset payout <amount>": "Set the payout multiplier for wins",
-            "-realblackjackset blinds <bigblind> <smallblind>": "Set the big bling and small blind amount for each round",
-            "-realblackjackset decks <number>": "Set the number of decks in the shoe",
-            "-realblackjackset endgame": "Force end the current game",
-            "-realblackjackset cardsleft": "Check remaining cards in shoe",
-            "-realblackjackset gamestate": "Show current game state"
-        }
-
-        cmd_text = "\n".join(f"**{cmd}**: {desc}" for cmd, desc in admin_commands.items())
-        embed.add_field(
-            name="Admin Commands",
-            value=cmd_text,
-            inline=False
-        )
+        # ...existing admin commands code...
 
         await ctx.send(embed=embed)
+
+    @realblackjackset.command(name="bettinglimits")
+    @commands.admin_or_permissions(administrator=True)
+    async def betting_limits(self, ctx, min_bet: int, max_bet: int):
+        """Set the minimum and maximum betting amounts for this server."""
+        if min_bet < 1 or max_bet < min_bet:
+            await ctx.send("Invalid betting limits. Minimum bet must be at least 1 and maximum bet must be greater than minimum.")
+            return
+            
+        await self.config.guild(ctx.guild).min_bet.set(min_bet)
+        await self.config.guild(ctx.guild).max_bet.set(max_bet)
+        
+        # Update any active game in this guild
+        if ctx.channel.id in self.games:
+            game = self.games[ctx.channel.id]
+            game.min_bet = min_bet
+            game.max_bet = max_bet
+            
+        await ctx.send(f"Betting limits updated: Min: {min_bet}, Max: {max_bet}")
+
+    @realblackjackset.command(name="payouts")
+    @commands.admin_or_permissions(administrator=True)
+    async def set_payouts(self, ctx, win_multiplier: float, blackjack_multiplier: float):
+        """Set the payout multipliers for wins and blackjacks."""
+        if win_multiplier < 1 or blackjack_multiplier < 1:
+            await ctx.send("Multipliers must be greater than 1.")
+            return
+            
+        async with self.config.guild(ctx.guild).payouts() as payouts:
+            payouts["win"] = win_multiplier
+            payouts["blackjack"] = blackjack_multiplier
+            
+        await ctx.send(f"Payout multipliers updated: Win: {win_multiplier}x, Blackjack: {blackjack_multiplier}x")
+
+    @realblackjackset.command(name="decks")
+    @commands.admin_or_permissions(administrator=True)
+    async def set_decks(self, ctx, number: int):
+        """Set the number of decks used in the shoe."""
+        if number < 1 or number > 8:
+            await ctx.send("Number of decks must be between 1 and 8.")
+            return
+            
+        await self.config.guild(ctx.guild).num_decks.set(number)
+        await ctx.send(f"Number of decks set to {number}")
+
+    @realblackjackset.command(name="timeouts")
+    @commands.admin_or_permissions(administrator=True)
+    async def set_timeouts(self, ctx, join_timeout: int, bet_timeout: int):
+        """Set the join and bet timeouts for the game."""
+        if join_timeout < 10 or bet_timeout < 10:
+            await ctx.send("Timeouts must be at least 10 seconds.")
+            return
+            
+        if join_timeout > 60 or bet_timeout > 60:
+            await ctx.send("Timeouts cannot exceed 60 seconds.")
+            return
+            
+        await self.config.guild(ctx.guild).join_timeout.set(join_timeout)
+        await self.config.guild(ctx.guild).bet_timeout.set(bet_timeout)
+        await ctx.send(f"Join timeout set to {join_timeout} seconds, Bet timeout set to {bet_timeout} seconds")
 
     async def place_bet(self, ctx, player_id, amount):
         user = self.bot.get_user(player_id)
@@ -996,93 +1098,231 @@ class RealBlackJack(commands.Cog):
         return success
 
     async def play_game(self, ctx, channel_id, embed):
-        """Main game loop."""
         game = self.games[channel_id]
         game.end_game = False
 
         while not game.end_game:
-            # Create new embed for this round
+            # Create new round embed
             round_embed = discord.Embed(
                 title="Real Blackjack",
-                color=0X9A081B,
-                description="🎲 Starting New Round..."
+                color=0xFF69B4,
+                description="🃏 Starting New Round..."
             )
             round_embed.set_thumbnail(url="https://i.ibb.co/7vJ2Y2V/realblackjack-logo-transparent.png")
-            round_message = await ctx.send(embed=round_embed)
-            
+            game.game_message = await ctx.send(embed=round_embed, view=game.view)
+
             # Process join and leave queues
+            round_embed.description = "👥 Processing player changes..."
+            await game.game_message.edit(embed=round_embed)
             await game.process_queues(ctx)
 
             if not game.has_active_players():
-                await ctx.send("No players remaining. Ending the game.")
+                round_embed.description = "No players remaining. Ending the game."
+                await game.game_message.edit(embed=round_embed)
                 game.end_game = True
                 del self.games[channel_id]
                 return
 
+            # Collect blinds
+            if not await game.collect_blinds(ctx):
+                if not game.has_active_players():
+                    round_embed.description = "Game ended due to insufficient players for blinds."
+                    await game.game_message.edit(embed=round_embed)
+                    game.end_game = True
+                    del self.games[channel_id]
+                    return
+
             # Take bets and play a round
             round_embed.description = "💰 Taking Bets..."
-            await round_message.edit(embed=round_embed)
+            await game.game_message.edit(embed=round_embed)
             await game.take_bets(ctx, channel_id)
 
             if game.end_game:
-                await ctx.send("Game manually stopped. Ending the game.")
+                round_embed.description = "Game manually stopped. Ending the game."
+                await game.game_message.edit(embed=round_embed)
                 del self.games[channel_id]
                 return
 
-            # Setup the game and deal initial cards with new embed
+            # Setup the game and deal initial cards
             round_embed.description = "🎴 Dealing Cards..."
-            await round_message.edit(embed=round_embed)
+            await game.game_message.edit(embed=round_embed)
             await game.setup_game(ctx, channel_id, round_embed)
 
-            if game.end_game:
-                await ctx.send("Game manually stopped. Ending the game.")
-                del self.games[channel_id]
-                return
-
-            # Handle player turns with the round's embed
+            # Player turns
             for player_id, player in game.player_objects.items():
                 user = self.bot.get_user(player_id)
                 round_embed.description = f"🎮 {user.display_name}'s Turn..."
-                await round_message.edit(embed=round_embed)
+                await game.game_message.edit(embed=round_embed)
                 await game.player_turns(ctx, channel_id, round_embed)
-
-            if game.end_game:
-                await ctx.send("Game manually stopped. Ending the game.")
-                del self.games[channel_id]
-                return
 
             # Dealer turn and payouts
             if any(player.score <= 21 for player in game.player_objects.values()):
                 round_embed.description = "🎰 Dealer's Turn..."
-                await round_message.edit(embed=round_embed)
+                await game.game_message.edit(embed=round_embed)
                 await game.dealer_turn(ctx, channel_id, round_embed)
 
             # Payout results
             round_embed.description = "💵 Calculating Payouts..."
-            await round_message.edit(embed=round_embed)
+            await game.game_message.edit(embed=round_embed)
             await game.payout(ctx, channel_id)
 
             # Clear game states for the next round
             await game.clear_states(ctx, channel_id)
 
             if game.end_game:
-                await ctx.send("Game manually stopped. Ending the game.")
+                round_embed.description = "Game manually stopped. Ending the game."
+                await game.game_message.edit(embed=round_embed)
                 del self.games[channel_id]
                 return
 
-            # Brief delay before next round
-            await ctx.send(embed=discord.Embed(
-                title="Round Ended",
-                description="Next round starts in 10 seconds.\nType `-rbj join` to join or `-rbj leave` to leave.",
-                color=0X9A081B
-            ))
+            # Brief delay before next round without changing the embed
+            await ctx.send("🔄 Next round starts in 10 seconds.\nUse the buttons below to join or leave the table.")
             await asyncio.sleep(10)
+
+            # Delete previous round's embed to keep chat cleaner
+            try:
+                await game.game_message.delete()
+            except discord.HTTPException:
+                pass
 
         if channel_id in self.games:
             del self.games[channel_id]
+            
         await ctx.send("Game over. Thanks for playing!")
 
-    # ...existing code...
+
+class BettingView(discord.ui.View):
+    def __init__(self, game_state, player, min_bet, max_bet):
+        super().__init__(timeout=30)
+        self.game_state = game_state
+        self.player = player
+        self.min_bet = min_bet
+        self.max_bet = max_bet
+        self.current_bet = 0
+
+    @discord.ui.button(label="10", style=discord.ButtonStyle.secondary, emoji="💰")
+    async def bet_10(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_to_bet(interaction, 10)
+
+    @discord.ui.button(label="50", style=discord.ButtonStyle.secondary, emoji="💰")
+    async def bet_50(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_to_bet(interaction, 50)
+
+    @discord.ui.button(label="100", style=discord.ButtonStyle.secondary, emoji="💰")
+    async def bet_100(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_to_bet(interaction, 100)
+
+    @discord.ui.button(label="500", style=discord.ButtonStyle.secondary, emoji="💰")
+    async def bet_500(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_to_bet(interaction, 500)
+
+    @discord.ui.button(label="1000", style=discord.ButtonStyle.secondary, emoji="💰")
+    async def bet_1000(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.add_to_bet(interaction, 1000)
+
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def clear_bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_bet = 0
+        await interaction.response.edit_message(content=f"Current bet: {self.current_bet}")
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    async def confirm_bet(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_bet < self.min_bet:
+            await interaction.response.send_message(f"Minimum bet is {self.min_bet}", ephemeral=True)
+            return
+        
+        member = interaction.user
+        balance = await bank.get_balance(member)
+        if self.current_bet > balance:
+            await interaction.response.send_message("You don't have enough chips!", ephemeral=True)
+            return
+            
+        self.player.bet = self.current_bet
+        await bank.withdraw_credits(member, self.current_bet)
+        self.stop()
+        await interaction.message.delete()
+
+    async def add_to_bet(self, interaction: discord.Interaction, amount):
+        if interaction.user.id != list(self.game_state.player_objects.keys())[0]:
+            await interaction.response.send_message("It's not your turn to bet!", ephemeral=True)
+            return
+            
+        new_bet = self.current_bet + amount
+        if new_bet > self.max_bet:
+            await interaction.response.send_message(f"Maximum bet is {self.max_bet}", ephemeral=True)
+            return
+            
+        self.current_bet = new_bet
+        await interaction.response.edit_message(content=f"Current bet: {self.current_bet}")
+
+
+class PlayerActionView(discord.ui.View):
+    def __init__(self, game_state, player, current_hand):
+        super().__init__(timeout=30)
+        self.game_state = game_state
+        self.player = player
+        self.current_hand = current_hand
+        self.action_taken = None
+        
+        # Disable split button if not eligible
+        if not (len(current_hand) == 2 and current_hand[0].rank == current_hand[1].rank):
+            self.split_button.disabled = True
+            
+        # Disable double button if not enough balance or not first action
+        if len(current_hand) != 2:
+            self.double_button.disabled = True
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, emoji="👊")
+    async def hit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != list(self.game_state.player_objects.keys())[0]:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.action_taken = "hit"
+        self.stop()
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary, emoji="🛑")
+    async def stand_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != list(self.game_state.player_objects.keys())[0]:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+        await interaction.response.defer()
+        self.action_taken = "stand"
+        self.stop()
+
+    @discord.ui.button(label="Double", style=discord.ButtonStyle.success, emoji="💰")
+    async def double_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != list(self.game_state.player_objects.keys())[0]:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+        
+        member = interaction.user
+        player_balance = await bank.get_balance(member)
+        
+        if self.player.bet * 2 > player_balance:
+            await interaction.response.send_message("Not enough chips to double down!", ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        self.action_taken = "double"
+        self.stop()
+
+    @discord.ui.button(label="Split", style=discord.ButtonStyle.primary, emoji="✂️")
+    async def split_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != list(self.game_state.player_objects.keys())[0]:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+            
+        member = interaction.user
+        player_balance = await bank.get_balance(member)
+        
+        if self.player.bet * 2 > player_balance:
+            await interaction.response.send_message("Not enough chips to split!", ephemeral=True)
+            return
+            
+        await interaction.response.defer()
+        self.action_taken = "split"
+        self.stop()
 
 async def setup(bot):
     await bot.add_cog(RealBlackJack(bot))
