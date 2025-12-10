@@ -1372,17 +1372,12 @@ class Bullshido(commands.Cog):
         self.logger.info(f"Cleared all user stats.")
         await ctx.send("Bullshido configuration has been reset to default values.")
 
-    @bullshido_group.command(
-        name="player_stats",
-        description="Displays your wins and losses",
-        aliases=["stats"],
-    )
+    @bullshido_group.command(name="player_stats", description="Displays your or a member's wins and losses", aliases=["stats"])
     async def player_stats(self, ctx: commands.Context, user: discord.Member = None):
-        """Displays your fighting stats and player attributes."""
+        """Displays your or a member's wins and losses."""
         if user is None:
             user = ctx.author
-            self.logger.info(f"{ctx.author} used the player_stats command.")
-
+        user = ctx.author
         wins = await self.config.user(user).wins()
         losses = await self.config.user(user).losses()
         draws = await self.config.user(user).draws()
