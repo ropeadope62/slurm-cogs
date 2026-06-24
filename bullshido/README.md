@@ -18,6 +18,8 @@ Bullshido is a Discord-based fighting game where players select a martial art st
 1. `/bullshido info`
    - **Description**: Displays information about all available Bullshido game commands.
    - **Usage**: `/bullshido info`
+
+> Optional AI hype support is available via `/bullshido hype` when `OPENAI_API_KEY` is configured in the environment.
    
 2. `/bullshido setstyle`
    - **Description**: Allows a player to select their fighting style.

@@ -1,14 +1,38 @@
 import os
-from openai import OpenAI
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+
+if load_dotenv:
+    load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+AI_AVAILABLE = bool(OPENAI_API_KEY and OpenAI is not None)
+
+client = OpenAI(api_key=OPENAI_API_KEY) if AI_AVAILABLE else None
+
+
+def _fallback_hype(attacker_name, defender_name, wager: int = 0):
+    if wager:
+        return (
+            f"{attacker_name} and {defender_name} are set to clash with {wager} on the line. "
+        )
+    return (
+        f"{attacker_name} and {defender_name} are set to clash in a Bullshido showdown. "
+    )
 
 
 def generate_hype(user_config, attacker_id, defender_id, attacker_name, defender_name):
+    if not AI_AVAILABLE:
+        return _fallback_hype(attacker_name, defender_name)
+
     # Define relevant keys
     relevant_keys = [
         "training_level",
@@ -79,6 +103,8 @@ def generate_hype(user_config, attacker_id, defender_id, attacker_name, defender
 def generate_hype_challenge(
     user_config, attacker_id, defender_id, attacker_name, defender_name, wager: int = 0
 ):
+    if not AI_AVAILABLE:
+        return _fallback_hype(attacker_name, defender_name, wager)
     # Define relevant keys
     relevant_keys = [
         "training_level",
@@ -135,7 +161,7 @@ def generate_hype_challenge(
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.4-mini",
         messages=[
             {
                 "role": "system",

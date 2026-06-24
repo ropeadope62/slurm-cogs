@@ -5,10 +5,8 @@ from discord import Interaction
 from datetime import datetime, timedelta
 from .ui_elements import SelectFightingStyleView, StatIncreaseView
 from .fighting_game import FightingGame
-from io import BytesIO
-from PIL import Image, ImageDraw, ImageFont, ImageTransform
 from .fighting_constants import INJURY_TREATMENT_COST, XP_REQUIREMENTS, STRIKES
-from .bullshido_ai import generate_hype, generate_hype_challenge
+from .bullshido_ai import AI_AVAILABLE, generate_hype, generate_hype_challenge
 import logging
 import os
 
@@ -49,6 +47,8 @@ class Bullshido(commands.Cog):
             "nutrition_level": 1,
             "morale": 100,
             "intimidation_level": 0,
+            "initiative": 0,
+            "activity_timestamps": [],
             "stamina_level": 100,
             "health_points": 100,
             "prize_money_won": 0,
@@ -80,6 +80,34 @@ class Bullshido(commands.Cog):
 
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or message.guild is None:
+            return
+        await self.track_recent_activity(message.author)
+
+    async def track_recent_activity(self, user: discord.Member):
+        timestamps = await self.config.user(user).activity_timestamps()
+        if timestamps is None:
+            timestamps = []
+        now = int(datetime.utcnow().timestamp())
+        recent_window = 900  # 15 minutes
+        recent_timestamps = [t for t in timestamps if now - t <= recent_window]
+        recent_timestamps.append(now)
+        if len(recent_timestamps) > 100:
+            recent_timestamps = recent_timestamps[-100:]
+        await self.config.user(user).activity_timestamps.set(recent_timestamps)
+        initiative = min(100, len(recent_timestamps) * 3)
+        await self.config.user(user).initiative.set(initiative)
+        return initiative
+
+    async def get_user_initiative(self, user: discord.Member):
+        initiative = await self.config.user(user).initiative()
+        if initiative is None:
+            initiative = 0
+            await self.config.user(user).initiative.set(0)
+        return initiative
         self.setup_logging()
         self.bg_task = self.bot.loop.create_task(self.check_inactivity())
         self.logger.info("Bullshido cog loaded.")
@@ -94,7 +122,7 @@ class Bullshido(commands.Cog):
             self.memory_handler = MemoryLogHandler()
             self.logger.addHandler(self.memory_handler)
 
-        log_dir = os.path.expanduser("~/ScrapGPT/ScrapGPT/logs")
+        log_dir = os.path.join(os.path.dirname(__file__), "logs")
         os.makedirs(log_dir, exist_ok=True)
         log_file_path = os.path.join(log_dir, "bullshido.log")
 
@@ -112,16 +140,18 @@ class Bullshido(commands.Cog):
         """Check if the user has sufficient stamina to fight."""
         self.logger.info(f"Checking if {user} has sufficient stamina...")
         stamina = await self.config.user(user).stamina_level()
-        return stamina >= required_stamina
+        stamina_bonus = await self.config.user(user).stamina_bonus()
+        total_stamina = stamina + (stamina_bonus * 5)
+        return total_stamina >= required_stamina
 
     async def add_permanent_injury(self, user: discord.Member, injury, body_part):
         """Add a permanent injury to a user."""
-        user_data = self.user_config[str(user.id)]
+        user_data = await self.config.user(user).all()
         if "permanent_injuries" not in user_data:
             user_data["permanent_injuries"] = []
         user_data["permanent_injuries"].append(f"{injury}")
         self.logger.info(f"Adding permanent injury {injury} to {user}.")
-        await self.bullshido_cog.config.user(user).permanent_injuries.set(
+        await self.config.user(user).permanent_injuries.set(
             user_data["permanent_injuries"]
         )
 
@@ -136,8 +166,8 @@ class Bullshido(commands.Cog):
         """Remove a permanent injury from a user."""
         self.logger.info(f"Removing permanent injury {injury} from {user}.")
         async with self.config.user(user).permanent_injuries() as injuries:
-            if body_part in injuries and injury in injuries[body_part]:
-                injuries[body_part].remove(injury)
+            if injury in injuries:
+                injuries.remove(injury)
 
     def is_admin_or_mod():
         async def predicate(ctx):
@@ -826,6 +856,13 @@ class Bullshido(commands.Cog):
         user_config[str(fighter1_id)] = fighter1_data
         user_config[str(fighter2_id)] = fighter2_data
 
+        if not AI_AVAILABLE:
+            await ctx.send(
+                "AI hype features are disabled because no OpenAI API key is configured. "
+                "Set `OPENAI_API_KEY` in your environment to enable this feature."
+            )
+            return
+
         if challenge:
             narrative = generate_hype_challenge(
                 user_config,
@@ -960,15 +997,7 @@ class Bullshido(commands.Cog):
 
         if socialized_medicine_mode:
             socialized_medicine_payer = guild.get_member(socialized_medicine_payer_id)
-            if socialized_medicine_mode:
-                await bank.withdraw_credits(socialized_medicine_payer, cost)
-                self.logger.info(
-                    f"{socialized_medicine_payer} has paid {cost} {currency} for treating {user}'s {injury}."
-                )
-                await ctx.send(
-                    f"Through socialized medicine, {socialized_medicine_payer.display_name} has paid {cost} {currency} for treating {user.display_name}'s {injury}."
-                )
-            else:
+            if not socialized_medicine_payer:
                 self.logger.warning(
                     "Socialized medicine payer is not found. Please reconfigure the payment mode."
                 )
@@ -976,6 +1005,18 @@ class Bullshido(commands.Cog):
                     "Socialized medicine payer is not found. Please reconfigure the payment mode."
                 )
                 return
+            if not await bank.can_spend(socialized_medicine_payer, cost):
+                await ctx.send(
+                    f"{socialized_medicine_payer.display_name} does not have enough {currency} to cover treatment."
+                )
+                return
+            await bank.withdraw_credits(socialized_medicine_payer, cost)
+            self.logger.info(
+                f"{socialized_medicine_payer} has paid {cost} {currency} for treating {user}'s {injury}."
+            )
+            await ctx.send(
+                f"Through socialized medicine, {socialized_medicine_payer.display_name} has paid {cost} {currency} for treating {user.display_name}'s {injury}."
+            )
         else:
             await bank.withdraw_credits(user, cost)
             self.logger.info(
@@ -1342,6 +1383,8 @@ class Bullshido(commands.Cog):
                     "nutrition_level": 1,
                     "morale": 100,
                     "intimidation_level": 0,
+                    "initiative": 0,
+                    "activity_timestamps": [],
                     "stamina_level": 100,
                     "last_interaction": None,
                     "last_command_used": None,
@@ -1396,10 +1439,11 @@ class Bullshido(commands.Cog):
         player_health = 100 + health_bonus
         morale = await self.config.user(user).morale()
         intimidation_level = await self.config.user(user).intimidation_level()
+        initiative = await self.config.user(user).initiative()
         fighting_style = await self.config.user(user).fighting_style()
         stamina = await self.config.user(user).stamina_level()
         stamina_bonus = await self.config.user(user).stamina_bonus()
-        player_stamina = stamina + stamina_bonus
+        player_stamina = stamina + (stamina_bonus * 5)
         player_damage_bonus = await self.config.user(user).damage_bonus()
         level_up_points_to_distribute = await self.config.user(
             user
@@ -1443,6 +1487,7 @@ class Bullshido(commands.Cog):
         embed.add_field(
             name="Intimidation Level", value=intimidation_level, inline=True
         )
+        embed.add_field(name="Initiative", value=initiative, inline=True)
         embed.add_field(name="Damage Bonus", value=player_damage_bonus, inline=True)
         embed.add_field(name="Stamina", value=player_stamina, inline=True)
         embed.add_field(
@@ -1493,6 +1538,7 @@ class Bullshido(commands.Cog):
         nutrition_level = await self.config.user(user).nutrition_level()
         morale = await self.config.user(user).morale()
         intimidation_level = await self.config.user(user).intimidation_level()
+        initiative = await self.config.user(user).initiative()
         wins = await self.config.user(user).wins()
         losses = await self.config.user(user).losses()
         fight_history = await self.config.user(user).fight_history()
@@ -1505,6 +1551,7 @@ class Bullshido(commands.Cog):
             "nutrition_level": nutrition_level,
             "morale": morale,
             "intimidation_level": intimidation_level,
+            "initiative": initiative,
             "fight_history": fight_history,
         }
 
@@ -1576,6 +1623,8 @@ class Bullshido(commands.Cog):
                 "morale": 80,
                 "intimidation_level": 1,
                 "stamina_level": 100,
+                "initiative": 0,
+                "activity_timestamps": [],
                 "last_interaction": None,
                 "last_command_used": None,
                 "last_train": None,
@@ -1593,6 +1642,8 @@ class Bullshido(commands.Cog):
                 "morale": 85,
                 "intimidation_level": 2,
                 "stamina_level": 100,
+                "initiative": 0,
+                "activity_timestamps": [],
                 "last_interaction": None,
                 "last_command_used": None,
                 "last_train": None,
@@ -1633,8 +1684,8 @@ class Bullshido(commands.Cog):
     async def increment_stamina_level(self, user):
         self.logger.info(f"Incrementing stamina level for {user}")
         stamina_level = await self.config.user(user).stamina_level()
-        new_stamina_level = stamina_level + 10
-        await self.config.user(user).training_level.set(new_stamina_level)
+        new_stamina_level = min(100, stamina_level + 10)
+        await self.config.user(user).stamina_level.set(new_stamina_level)
         self.logger.info(f"Stamina level for {user} is now {new_stamina_level}")
         return new_stamina_level
 
