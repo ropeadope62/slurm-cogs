@@ -80,6 +80,9 @@ class Bullshido(commands.Cog):
 
         self.config.register_user(**default_user)
         self.config.register_guild(**default_guild)
+        self.setup_logging()
+        self.bg_task = self.bot.loop.create_task(self.check_inactivity())
+        self.logger.info("Bullshido cog loaded.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -108,9 +111,6 @@ class Bullshido(commands.Cog):
             initiative = 0
             await self.config.user(user).initiative.set(0)
         return initiative
-        self.setup_logging()
-        self.bg_task = self.bot.loop.create_task(self.check_inactivity())
-        self.logger.info("Bullshido cog loaded.")
 
     def setup_logging(self):
         self.logger = logging.getLogger("red.bullshido")
