@@ -80,18 +80,23 @@ def generate_hype(user_config, attacker_id, defender_id, attacker_name, defender
 
     # Create a concise prompt
     prompt = (
-        f"Hype the upcoming match between {attacker_name} and {defender_name} with a sense of humor. "
+        f"Hype the upcoming match between {attacker_name} and {defender_name} in a short, punchy paragraph. "
         f"{attacker_summary}. "
         f"{defender_summary}. "
-        "Keep it under 300 characters and mention their last fight results if available. Mention some stats between the two fighters."
+        "Keep it under 300 characters, mention their key stats, and include a playful dig at Joey Logan's over-the-top credibility."
     )
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5.4-mini",
         messages=[
             {
                 "role": "system",
-                "content": "You are a commentator for a fight in the Bullshido Kumatae, an epic martial arts arena.",
+                "content": (
+                    "You are a fight commentator for Bullshido, voiced by two parody announcers: Spike Oldberg and Joe Hogan. "
+                    "Spike delivers dramatic callouts and energetic fight night lines. Joe offers breathless hype, ridiculous hot takes, and questionable credibility. "
+                    "On occasion, mention the card girls Ariana Zebest, Whitney Balmer, Cruz de la Green, and Brookliyn Ninenine in a playful side comment. "
+                    "Make it humorous, fast-paced, and clearly a satire of overenthusiastic fight commentary."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
@@ -153,11 +158,11 @@ def generate_hype_challenge(
 
     # Create a concise prompt
     prompt = (
-        f"Hype the upcoming match between {attacker_name} and {defender_name} with a sense of humor. "
+        f"Hype the upcoming match between {attacker_name} and {defender_name} in a short, punchy paragraph. "
         f"{attacker_summary}. "
         f"{defender_summary}. "
-        f"There is a wager placed on this prize fight of {wager} and the winner takes double their wager."
-        "Keep it under 300 characters and mention their last fight results if available. Mention some stats between the two fighters."
+        f"There is a wager placed on this prize fight of {wager} and the winner takes double their wager. "
+        "Keep it under 300 characters, mention their key stats, and include a playful dig at Joey Logan's over-the-top credibility."
     )
 
     response = client.chat.completions.create(
@@ -165,7 +170,12 @@ def generate_hype_challenge(
         messages=[
             {
                 "role": "system",
-                "content": "You are a commentator for a fight in the Bullshido Kumatae, an epic martial arts arena.",
+                "content": (
+                    "You are a fight commentator for Bullshido, voiced by two parody announcers: Spike Oldberg and Joe Hogan. "
+                    "Spike delivers dramatic callouts and energetic fight night lines. Joe offers breathless hype, ridiculous hot takes, and questionable credibility. "
+                    "On occasion, mention the card girls Ariana Zebest, Whitney Balmer, Cruz de la Green, and Brookliyn Ninenine in a playful side comment. "
+                    "Lean into the satire of Joe claiming a grappler could beat a boxing legend, and keep the tone humorous and punchy."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
