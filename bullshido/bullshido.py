@@ -283,21 +283,21 @@ class Bullshido(commands.Cog):
         self.logger.debug(
             f"Creating xp bar for user at level {current_level} with {current_xp} xp."
         )
-        previous_level_xp = XP_REQUIREMENTS.get(current_level)
+        previous_level_xp = XP_REQUIREMENTS.get(current_level - 1, 0)
         next_level = current_level + 1
 
         if next_level_xp is None:
             self.logger.debug("User is at max level.")
-            xp_range = current_xp - previous_level_xp
+            xp_range = max(current_xp - previous_level_xp, 0)
             xp_progress = xp_range
             progress = 1
         else:
             self.logger.debug(
                 f"User is at level {current_level}. Next level: {next_level_xp}"
             )
-            xp_range = next_level_xp - previous_level_xp
-            xp_progress = current_xp - previous_level_xp
-            progress = xp_progress / xp_range if xp_range > 0 else 0
+            xp_range = max(next_level_xp - previous_level_xp, 1)
+            xp_progress = max(current_xp - previous_level_xp, 0)
+            progress = min(max(xp_progress / xp_range, 0), 1)
 
         progress_bar_length = 30
         progress_bar_filled = int(progress * progress_bar_length)
@@ -305,13 +305,13 @@ class Bullshido(commands.Cog):
         progress_bar += (
             "=" * (progress_bar_length - progress_bar_filled)
             + "]"
-            + "Level:"
+            + " Level: "
             + str(next_level)
         )
         if progress_bar_filled < progress_bar_length:
             marker = "🔴"
             progress_bar = (
-                progress_bar[:progress_bar_filled]
+                progress_bar[: progress_bar_filled]
                 + marker
                 + progress_bar[progress_bar_filled + 1 :]
             )
@@ -1422,84 +1422,88 @@ class Bullshido(commands.Cog):
     )
     async def player_stats(self, ctx: commands.Context, user: discord.Member = None):
         """Displays your fighting stats and player attributes."""
-        if user is None:
-            user = ctx.author
-            self.logger.info(f"{ctx.author} used the player_stats command.")
+        try:
+            if user is None:
+                user = ctx.author
+                self.logger.info(f"{ctx.author} used the player_stats command.")
 
-        wins = await self.config.user(user).wins()
-        losses = await self.config.user(user).losses()
-        draws = await self.config.user(user).draws()
-        level = await self.config.user(user).level()
-        current_xp = await self.config.user(user).xp()
-        next_level_xp = XP_REQUIREMENTS.get(level + 1, None)
+            wins = await self.config.user(user).wins()
+            losses = await self.config.user(user).losses()
+            draws = await self.config.user(user).draws()
+            level = await self.config.user(user).level()
+            current_xp = await self.config.user(user).xp()
+            next_level_xp = XP_REQUIREMENTS.get(level + 1, None)
 
-        training_level = await self.config.user(user).training_level()
-        nutrition_level = await self.config.user(user).nutrition_level()
-        health_bonus = await self.config.user(user).health_bonus()
-        player_health = 100 + health_bonus
-        morale = await self.config.user(user).morale()
-        intimidation_level = await self.config.user(user).intimidation_level()
-        initiative = await self.config.user(user).initiative()
-        fighting_style = await self.config.user(user).fighting_style()
-        stamina = await self.config.user(user).stamina_level()
-        stamina_bonus = await self.config.user(user).stamina_bonus()
-        player_stamina = stamina + (stamina_bonus * 5)
-        player_damage_bonus = await self.config.user(user).damage_bonus()
-        level_up_points_to_distribute = await self.config.user(
-            user
-        ).level_points_to_distribute()
-        prize_money_won = await self.config.user(user).prize_money_won()
-        prize_money_lost = await self.config.user(user).prize_money_lost()
+            training_level = await self.config.user(user).training_level()
+            nutrition_level = await self.config.user(user).nutrition_level()
+            health_bonus = await self.config.user(user).health_bonus()
+            player_health = 100 + health_bonus
+            morale = await self.config.user(user).morale()
+            intimidation_level = await self.config.user(user).intimidation_level()
+            initiative = await self.config.user(user).initiative()
+            fighting_style = await self.config.user(user).fighting_style()
+            stamina = await self.config.user(user).stamina_level()
+            stamina_bonus = await self.config.user(user).stamina_bonus()
+            player_stamina = stamina + (stamina_bonus * 5)
+            player_damage_bonus = await self.config.user(user).damage_bonus()
+            level_up_points_to_distribute = await self.config.user(
+                user
+            ).level_points_to_distribute()
+            prize_money_won = await self.config.user(user).prize_money_won()
+            prize_money_lost = await self.config.user(user).prize_money_lost()
 
-        total_wins = sum(wins.values())
-        total_losses = sum(losses.values())
+            total_wins = sum(wins.values())
+            total_losses = sum(losses.values())
 
-        xp_bar = self.create_xp_bar(current_xp, level, next_level_xp)
-        xp_info = (
-            f"{current_xp} / {next_level_xp} XP"
-            if next_level_xp is not None
-            else f"{current_xp} XP (Max Level)"
-        )
+            xp_bar = self.create_xp_bar(current_xp, level, next_level_xp)
+            xp_info = (
+                f"{current_xp} / {next_level_xp} XP"
+                if next_level_xp is not None
+                else f"{current_xp} XP (Max Level)"
+            )
 
-        embed = discord.Embed(
-            title=f"{user.display_name}'s Fight Record", color=0xFF0000
-        )
-        embed.add_field(name="Total Wins", value=total_wins, inline=True)
-        embed.add_field(name="Total Losses", value=total_losses, inline=True)
-        embed.add_field(name="Wins (UD)", value=wins["UD"], inline=True)
-        embed.add_field(name="Wins (SD)", value=wins["SD"], inline=True)
-        embed.add_field(name="Wins (TKO)", value=wins["TKO"], inline=True)
-        embed.add_field(name="Wins (KO)", value=wins["KO"], inline=True)
-        embed.add_field(name="Losses (UD)", value=losses["UD"], inline=True)
-        embed.add_field(name="Losses (SD)", value=losses["SD"], inline=True)
-        embed.add_field(name="Losses (TKO)", value=losses["TKO"], inline=True)
-        embed.add_field(name="Losses (KO)", value=losses["KO"], inline=True)
-        embed.add_field(name="Draws", value=draws, inline=True)
-        embed.add_field(
-            name=f"{user.display_name}'s Current Stats", value="\u200b", inline=False
-        )
-        embed.add_field(name="Fighting Style", value=fighting_style, inline=True)
-        embed.add_field(name="Level", value=level, inline=True)
-        embed.add_field(name="Training Level", value=training_level, inline=True)
-        embed.add_field(name="Nutrition Level", value=nutrition_level, inline=True)
-        embed.add_field(name="Health", value=player_health, inline=True)
-        embed.add_field(name="Morale", value=morale, inline=True)
-        embed.add_field(
-            name="Intimidation Level", value=intimidation_level, inline=True
-        )
-        embed.add_field(name="Initiative", value=initiative, inline=True)
-        embed.add_field(name="Damage Bonus", value=player_damage_bonus, inline=True)
-        embed.add_field(name="Stamina", value=player_stamina, inline=True)
-        embed.add_field(
-            name="Level Points to Distribute",
-            value=level_up_points_to_distribute,
-            inline=True,
-        )
-        embed.add_field(name="Prize Money Won", value=prize_money_won, inline=True)
-        embed.add_field(name="Prize Money Lost", value=prize_money_lost, inline=True)
-        embed.add_field(name="XP Progress", value=xp_bar, inline=False)
-        embed.set_thumbnail(url="https://i.ibb.co/7KK90YH/bullshido.png")
-        await ctx.send(embed=embed)
+            embed = discord.Embed(
+                title=f"{user.display_name}'s Fight Record", color=0xFF0000
+            )
+            embed.add_field(name="Total Wins", value=total_wins, inline=True)
+            embed.add_field(name="Total Losses", value=total_losses, inline=True)
+            embed.add_field(name="Wins (UD)", value=wins["UD"], inline=True)
+            embed.add_field(name="Wins (SD)", value=wins["SD"], inline=True)
+            embed.add_field(name="Wins (TKO)", value=wins["TKO"], inline=True)
+            embed.add_field(name="Wins (KO)", value=wins["KO"], inline=True)
+            embed.add_field(name="Losses (UD)", value=losses["UD"], inline=True)
+            embed.add_field(name="Losses (SD)", value=losses["SD"], inline=True)
+            embed.add_field(name="Losses (TKO)", value=losses["TKO"], inline=True)
+            embed.add_field(name="Losses (KO)", value=losses["KO"], inline=True)
+            embed.add_field(name="Draws", value=draws, inline=True)
+            embed.add_field(
+                name=f"{user.display_name}'s Current Stats", value="\u200b", inline=False
+            )
+            embed.add_field(name="Fighting Style", value=fighting_style, inline=True)
+            embed.add_field(name="Level", value=level, inline=True)
+            embed.add_field(name="Training Level", value=training_level, inline=True)
+            embed.add_field(name="Nutrition Level", value=nutrition_level, inline=True)
+            embed.add_field(name="Health", value=player_health, inline=True)
+            embed.add_field(name="Morale", value=morale, inline=True)
+            embed.add_field(
+                name="Intimidation Level", value=intimidation_level, inline=True
+            )
+            embed.add_field(name="Initiative", value=initiative, inline=True)
+            embed.add_field(name="Damage Bonus", value=player_damage_bonus, inline=True)
+            embed.add_field(name="Stamina", value=player_stamina, inline=True)
+            embed.add_field(
+                name="Level Points to Distribute",
+                value=level_up_points_to_distribute,
+                inline=True,
+            )
+            embed.add_field(name="Prize Money Won", value=prize_money_won, inline=True)
+            embed.add_field(name="Prize Money Lost", value=prize_money_lost, inline=True)
+            embed.add_field(name="XP Progress", value=xp_bar, inline=False)
+            embed.set_thumbnail(url="https://i.ibb.co/7KK90YH/bullshido.png")
+            await ctx.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"player_stats command failed: {e}")
+            await ctx.send("An error occurred while fetching player stats. Please try again later.")
 
     @bullshido_group.command(
         name="fight_record", description="Displays the results of your last 10 fights"
