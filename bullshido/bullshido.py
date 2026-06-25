@@ -835,7 +835,11 @@ class Bullshido(commands.Cog):
         wager: int = 0,
         challenge: bool = False,
     ):
-        await ctx.defer()
+        if hasattr(ctx, "defer") and callable(ctx.defer):
+            try:
+                await ctx.defer()
+            except Exception:
+                pass
         self.logger.info(f"Generating hype between {fighter1} and {fighter2}.")
         fighter1_id = fighter1.id
         fighter2_id = fighter2.id
@@ -1100,7 +1104,11 @@ class Bullshido(commands.Cog):
     )
     async def fight(self, ctx: commands.Context, opponent: discord.Member):
         """Start a fight with another player."""
-        await ctx.defer()
+        if hasattr(ctx, "defer") and callable(ctx.defer):
+            try:
+                await ctx.defer()
+            except Exception:
+                pass
         self.logger.info(f"{ctx.author} challenged {opponent} to a fight.")
         try:
             player1, player2 = ctx.author, opponent
