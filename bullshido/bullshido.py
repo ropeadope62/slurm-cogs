@@ -1476,9 +1476,6 @@ class Bullshido(commands.Cog):
             embed.add_field(name="Losses (TKO)", value=losses["TKO"], inline=True)
             embed.add_field(name="Losses (KO)", value=losses["KO"], inline=True)
             embed.add_field(name="Draws", value=draws, inline=True)
-            embed.add_field(
-                name=f"{user.display_name}'s Current Stats", value="\u200b", inline=False
-            )
             embed.add_field(name="Fighting Style", value=fighting_style, inline=True)
             embed.add_field(name="Level", value=level, inline=True)
             embed.add_field(name="Training Level", value=training_level, inline=True)
