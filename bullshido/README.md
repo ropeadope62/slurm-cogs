@@ -1,149 +1,297 @@
-
 ![Bullshido](./bullshido.png)
-# Bullshido - A Multiplayer Fighting Game for Discord
 
-## Overview:
+# Bullshido
 
-Bullshido is a Discord-based fighting game where players select a martial art style and engage in combat against each other. The game incorporates elements of randomness and strategy, making each fight unique and exciting, and a levelling system that allows players to improve their skills over time. Players can track their wins, losses, and other stats to monitor their progress and compare themselves to other players. Bullshido aims to provide an engaging and competitive experience for Discord users who enjoy martial arts and combat games. This cog rewards players for daily server interactions by performing their training and diet activities daily or else they will suffer stat penalties after 48 hours. 
+Bullshido is a hybrid Red-DiscordBot fighting cog built around exaggerated martial arts spectacle. Players pick a style, build a fighter over time, train and diet daily, fight other members, collect injuries, climb rankings, and optionally wager currency through Red's bank system.
 
-## Features:
+## Requirements
 
-1. **Select Fighting Style**: Players can choose from a variety of fighting styles, each with unique strikes and damage ranges.
-2. **Combat System**: Players take turns attacking each other, with the damage dealt being influenced by random modifiers for added unpredictability.
-3. **Levelling System**: Through training, nutrition, and other attributes, players can increase their stats to improve their chances of winning fights.
-4. **Player Stats**: Track wins, losses, and other stats to monitor progress and skill level.
+- Red-DiscordBot with hybrid command support
+- Red bank enabled for challenge wagers and injury treatment costs
+- `OPENAI_API_KEY` only if you want the standalone `/bullshido hype` command
 
-## Commands:
+Live fights do not require OpenAI. Fight intros fall back to non-AI narration if AI generation is unavailable or fails.
 
-1. `/bullshido info`
-   - **Description**: Displays information about all available Bullshido game commands.
-   - **Usage**: `/bullshido info`
+## Feature Summary
 
-> Optional AI hype support is available via `/bullshido hype` when `OPENAI_API_KEY` is configured in the environment.
-   
-2. `/bullshido setstyle`
-   - **Description**: Allows a player to select their fighting style.
-   - **Usage**: `/bullshido select_fighting_style`
-   
-3. `/bullshido list_fighting_styles`
-   - **Description**: Lists all available fighting styles that players can choose from.
-   - **Usage**: `/bullshido list_fighting_styles`
-   
-4. `/bullshido start_fight`
-   - **Description**: Initiates a fight between two players.
-   - **Usage**: `/bullshido start_fight <opponent>`
-   - **Note**: Both players must have selected a fighting style before starting a fight.
+- Interactive fighting style selection
+- Simulated fights with rounds, live updates, decision scoring, KO, and TKO
+- Style-based strike pools and weighted damage calculations
+- Daily training and nutrition progression
+- Automatic stat decay when training or diet is skipped
+- XP, levels, and spendable stat points
+- Persistent stamina between fights
+- Permanent injury tracking and treatment
+- Rankings, fight history, and detailed player stat views
+- Optional wagered fights through Red bank integration
+- Owner-tunable combat settings
 
-5. `/bullshido player_stats`
-   - **Description**: Displays the stats of a player, including wins, losses, and other attributes.
-   - **Usage**: `/bullshido player_stats <player>`
-   - **Note**: The player's name must be provided to view their stats.
+## Fighting Styles
 
-6. `/bullshido ranking`
-   - **Description**: Displays the ranking of players based on their wins and losses.
-   - **Usage**: `/bullshido ranking`
+- Karate
+- Muay-Thai
+- Aikido
+- Boxing
+- Kung-Fu
+- Judo
+- Taekwondo
+- Wrestling
+- Krav-Maga
+- Capoeira
+- Sambo
+- Kickboxing
+- MMA
+- Brazilian Jiu-Jitsu
+- Zui Quan
 
-7. `/bullshido injuries`
-   - **Description**: Shows the permanent injuries sustained by a player.
-   - **Usage**: `/bullshido injuries <player>`
-   - **Note**: If a player name is not provided injuries will be displayed for the command user. 
+## Player Commands
 
-8. `/bullshido treat`
-   - **Description**: Allows a player to treat their permanent injuries.
-   - **Usage**: `/bullshido treat <user> <injury>
+- `/bullshido help`
+  - Shows the in-bot gameplay overview.
 
-## Gameplay:
+- `/bullshido setstyle`
+  - Opens the fighting style selection UI.
+  - Changing style resets your training level to `0`.
 
-### Choosing a Fighting Style:
+- `/bullshido list_fighting_styles`
+  - Lists all available fighting styles.
 
-Players use the `/bullshido select_fighting_style` command to choose their preferred fighting style from a list of martial arts, including Karate, Muay-Thai, Aikido, Boxing, Kung-Fu, Judo, Taekwondo, Wrestling, Sambo, MMA, Capoeira, Kick-Boxing, and Krav-Maga.
+- `/bullshido train`
+  - Requires a selected fighting style.
+  - Can be used once every 24 hours.
+  - Increases training level by `10`, up to `100`.
 
-### Starting a Fight:
+- `/bullshido diet`
+  - Requires a selected fighting style.
+  - Can be used once every 24 hours.
+  - Increases nutrition level by `10`, up to `100`.
 
-To challenge another player, use the `/bullshido start_fight <opponent>` command. Ensure both players have selected their fighting styles.
+- `/bullshido distribute_points`
+  - Opens the stat allocation UI if you have unspent level points.
+  - Spend points on health, stamina, or damage bonuses.
 
-### Combat Mechanics:
+- `/bullshido fight @opponent`
+  - Starts a normal fight.
+  - Both fighters must have a selected style.
+  - Both fighters must have enough stamina to begin.
+  - You cannot fight yourself.
 
-1. The game determines which player goes first based on their training level. Players then take turns attacking each other.
-2. Each attack deals a random amount of damage, influenced by the player
+- `/bullshido challenge @opponent <bet>`
+  - Starts a wagered fight using Red bank currency.
+  - Both fighters must be able to afford the wager.
+  - The opponent must answer `yes` or `no` in the same channel within 30 seconds.
+  - Draws refund both fighters.
 
-Bullshido - A Multiplayer Fighting Game for Discord
-Overview:
+- `/bullshido hype @fighter1 @fighter2 [wager] [challenge]`
+  - Generates a standalone hype embed.
+  - Requires `OPENAI_API_KEY`.
 
-The game determines which player goes first based on their training level. Players then take turns attacking each other.
-Each attack deals a random amount of damage, influenced by the player’s chosen fighting style and stats, as well as the stats of the defender.
-The combat actions are described in a humanized manner, e.g., "Player1 throws a punch into Player2's body causing 15 damage!"
+- `/bullshido player_stats [@user]`
+  - Shows detailed fighter stats for yourself or another member.
+  - Alias: `stats`
 
-Winning the Game:
+- `/bullshido fight_record`
+  - Shows your last 10 recorded fights.
 
-The game continues for 3 rounds, with each player taking turns attacking and defending. Each round is scored separately. The player with the most points at the end of the 3 rounds wins the fight. Alternatively, a player can win by knocking out their opponent before the end of the 3 rounds. Knockouts can occur by TKO or KO. 
+- `/bullshido rankings`
+  - Shows the top 25 fighters by win/loss ratio.
+  - Aliases: `rank`, `leaderboard`, `lb`
 
+- `/bullshido top_injuries`
+  - Shows the 10 fighters with the most permanent injuries.
 
-## Levelling System Explained
+- `/bullshido injuries [@user]`
+  - Shows permanent injuries for yourself or another member.
+  - Aliases: `injury`, `inj`
 
-### Stamina Calculation
+- `/bullshido treat <injury>`
+  - Treats one of your permanent injuries.
+  - Treatment cost depends on the injury.
+  - If socialized medicine is enabled, the configured payer covers the bill.
 
-**Formula:**
+## Owner Commands
 
+### Settings
 
-`self.player1_stamina = self.player1_data.get('stamina_level', 100) + (self.player1_data.get('stamina_bonus', 0) * 5)
-self.player2_stamina = self.player2_data.get('stamina_level', 100) + (self.player2_data.get('stamina_bonus', 0) * 5)` 
+- `/bullshidoset`
+  - Displays the current Bullshido guild settings.
 
-**Explanation:**
+- `/bullshidoset socializedmedicine [@user]`
+  - Toggles socialized medicine.
+  - When enabling it, you must specify the member who will pay treatment costs.
 
--   `stamina_level`: The base stamina level of the player, defaulting to 100.
--   `stamina_bonus`: Each point allocated to stamina increases it by a fixed amount (5 in this case).
+- `/bullshidoset rounds <int>`
+  - Sets the number of rounds in each fight.
 
-**Impact:**
+- `/bullshidoset max_strikes_per_round <int>`
+  - Sets the maximum number of strikes per player per round.
 
--   The total stamina for each player is the sum of their base stamina level and the bonus from their stamina stat points.
--   **Example:** If a player has a `stamina_level` of 100 and a `stamina_bonus` of 2, their total stamina would be `100 + (2 * 5) = 110`.
+- `/bullshidoset training_weight <float>`
+  - Sets how much training contributes to damage.
 
-### Health Calculation
+- `/bullshidoset diet_weight <float>`
+  - Sets how much nutrition contributes to damage.
 
-**Formula:**
+- `/bullshidoset damage_bonus_weight <float>`
+  - Sets how strongly damage bonus contributes to damage.
 
-`self.player1_health = 100 + (self.player1_data.get('health_bonus', 0) * 10)
-self.player2_health = 100 + (self.player2_data.get('health_bonus', 0) * 10)` 
+- `/bullshidoset base_health <int>`
+  - Sets base fighter health before bonuses.
 
-**Explanation:**
+- `/bullshidoset action_cost <int>`
+  - Sets the configured action cost value.
 
--   Each point allocated to health increases the player's health by a fixed amount (10 in this case).
+- `/bullshidoset base_miss_probability <float>`
+  - Sets the base miss chance before modifiers.
 
-**Impact:**
+- `/bullshidoset base_stamina_cost <int>`
+  - Sets the base stamina cost before modifiers.
 
--   The total health for each player is the sum of a base health level (100) and the bonus from their health stat points.
--   **Example:** If a player has a `health_bonus` of 3, their total health would be `100 + (3 * 10) = 130`.
+- `/bullshidoset critical_chance <float>`
+  - Sets the base critical hit chance.
 
-### Damage Calculation
+- `/bullshidoset permanent_injury_chance <float>`
+  - Sets the chance that a critical injury becomes permanent.
 
-**Formula:**
+### Progression And Maintenance
 
-`def calculate_adjusted_damage(self, base_damage, training_level, diet_level, damage_bonus):
-    training_bonus = math.log10(training_level + 1) * self.training_weight
-    diet_bonus = math.log10(diet_level + 1) * self.diet_weight
-    adjusted_damage = base_damage * (1 + training_bonus + diet_bonus + (damage_bonus * 0.05))
-    return round(adjusted_damage)` 
+- `/bullshidoset set_level @user <level>`
+  - Sets a player's level and updates available level-up points.
 
-**Explanation:**
+- `/bullshidoset reset_level @user`
+  - Resets a player's level, XP, and bonus stats.
 
--   `base_damage`: The base amount of damage dealt by a strike.
--   `training_bonus`: A multiplier based on the player's training level, contributing to the overall damage.
--   `diet_bonus`: A multiplier based on the player's diet level, contributing to the overall damage.
--   `damage_bonus`: Each point allocated to damage increases the base damage by a percentage (5% per point in this case).
+- `/bullshidoset set_player_stats @user <stamina_bonus> <health_bonus> <damage_bonus>`
+  - Directly sets a player's bonus stats.
 
-**Impact:**
+- `/bullshido reset_stats`
+  - Confirms and resets stored user data fields to defaults.
 
--   The total damage dealt by a player in a strike is influenced by their base damage, training level, diet level, and damage stat points.
--   **Example:** If a player's `base_damage` is 20, `training_level` is 2, `diet_level` is 3, and `damage_bonus` is 4:
-    -   `training_bonus = math.log10(2 + 1) * 0.15 ≈ 0.071`
-    -   `diet_bonus = math.log10(3 + 1) * 0.15 ≈ 0.09`
-    -   `damage_bonus = 4 * 0.05 = 0.20`
-    -   `adjusted_damage = 20 * (1 + 0.071 + 0.09 + 0.20) ≈ 20 * 1.361 = 27.22`
-    -   The final damage would be `round(27.22) = 27`.
+- `/bullshido reset_config`
+  - Clears all stored Bullshido user data.
 
-### Summary
+- `/bullshido clear_old_config`
+  - Clears stored user data for cleanup or migration recovery.
 
-1.  **Stamina**: The player's stamina determines how many actions they can perform before getting tired. Each point in stamina increases the total stamina by 5 units.
-2.  **Health**: The player's health determines how much damage they can take before losing. Each point in health increases the total health by 10 units.
-3.  **Damage**: The player's damage output in strikes is influenced by their training level, diet level, and damage points. Each point in damage increases the base damage by 5%.
+### Debug And Testing
+
+- `/bullshido log`
+  - Shows the in-memory Bullshido log.
+
+- `/bullshido test_fight_image @player1 @player2`
+  - Generates a sample fight image for testing.
+
+## Tracked Fighter Stats
+
+Bullshido stores and surfaces these fighter attributes:
+
+- fighting style
+- wins by result type
+- losses by result type
+- draws
+- XP
+- level
+- unspent level points
+- stamina bonus
+- health bonus
+- damage bonus
+- training level
+- nutrition level
+- morale
+- intimidation level
+- initiative
+- stored stamina
+- prize money won
+- prize money lost
+- permanent injuries
+- fight history
+
+## Progression Rules
+
+### XP And Levels
+
+- Decisive fights award XP to both fighters.
+- Level-ups grant points you can spend through `/bullshido distribute_points`.
+- Stat spending currently supports health, stamina, and damage bonuses.
+
+### Daily Training And Diet
+
+- Training and diet are separate once-per-day actions.
+- Each successful use adds `10` points to that track.
+- Training and nutrition both cap at `100`.
+- A background task checks inactivity hourly.
+- For each full missed day, the skipped track loses `10` points down to a minimum of `1`.
+
+### Initiative
+
+- Initiative is based on recent server activity over the last 15 minutes.
+- More recent chat activity increases initiative up to `100`.
+- Initiative and training together influence who attacks first.
+
+## Fight Mechanics
+
+### Start Conditions
+
+- Both fighters must be different users.
+- Both fighters must have a selected style.
+- Both fighters must have enough stamina to start.
+- Only one fight can run in a channel at a time.
+
+### Health And Stamina
+
+- Total health is calculated as `base_health + health_bonus * 10`.
+- Displayed stamina is calculated as `stamina_level + stamina_bonus * 5`.
+- Stamina is preserved between fights and partially recovers after a match.
+- Strike stamina cost is affected by training, nutrition, intimidation, and grapple-style moves.
+
+### Damage, Miss Chance, And Critical Hits
+
+- Each style has its own strike pool and damage ranges.
+- Adjusted damage uses:
+  - training level
+  - nutrition level
+  - damage bonus
+  - configured damage weights
+- A random post-adjustment damage modifier is applied to each strike.
+- Miss chance is affected by:
+  - base miss probability
+  - attacker stamina
+  - defender stamina
+  - training difference
+  - intimidation difference
+- Critical hit chance is affected by:
+  - base critical chance
+  - training difference
+  - intimidation difference
+
+### Injuries
+
+- Critical hits can cause injuries.
+- Permanent injuries can occur based on the configured permanent injury chance.
+- Hitting an already permanently injured body part deals double damage.
+- Permanent injuries can be treated later with `/bullshido treat`.
+
+### End States And Scoring
+
+- Fights can end by KO, TKO, decision, or draw.
+- If neither fighter is stopped early, the match goes to judges.
+- Round scoring uses a 10-point-must style decision system.
+- Rankings are based on win/loss ratio rather than XP.
+
+### Morale And Intimidation
+
+- Intimidation is recalculated from KO and TKO wins and losses.
+- Morale is tracked and updated after decisive results.
+- Intimidation directly affects miss chance and finish pressure.
+
+## AI Hype Behavior
+
+- Live fights attempt to generate AI hype when available.
+- If live hype generation fails, Bullshido falls back to a standard intro instead of cancelling the fight.
+- The standalone `/bullshido hype` command still requires `OPENAI_API_KEY`.
+
+## Notes
+
+- Bullshido uses hybrid commands, so prefix and slash behavior depends on your Red setup.
+- Wagered fights and injury treatment require Red bank integration.
+- The owner maintenance commands can wipe stored fighter data.

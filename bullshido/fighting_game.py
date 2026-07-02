@@ -3,7 +3,6 @@ import asyncio
 import discord
 import math
 import tempfile
-from discord import File
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import os
@@ -12,7 +11,7 @@ from .fighting_constants import (
     STRIKE_ACTIONS, TKO_MESSAGES, KO_MESSAGES, KO_VICTOR_MESSAGE, TKO_VICTOR_MESSAGE, REFEREE_STOPS, FIGHT_RESULT_LONG,
     ROUND_RESULTS_WIN, ROUND_RESULTS_CLOSE, TKO_MESSAGE_FINALES, KO_VICTOR_FLAVOR
 )
-from .bullshido_ai import generate_hype, generate_hype_challenge
+from .bullshido_ai import generate_hype_safe, generate_hype_challenge_safe
 class FightingGame:
     active_games = {}
 
@@ -29,8 +28,8 @@ class FightingGame:
         self.player2_max_stamina = self.calculate_max_stamina(player2_data)
         self.player1_stamina = self.calculate_current_stamina(player1_data)
         self.player2_stamina = self.calculate_current_stamina(player2_data)
-        self.player1_health = 100 + (self.player1_data.get('health_bonus', 0) * 10)
-        self.player2_health = 100 + (self.player2_data.get('health_bonus', 0) * 10)
+        self.player1_health = self.calculate_total_health(100, self.player1_data)
+        self.player2_health = self.calculate_total_health(100, self.player2_data)
         self.player1_initiative = player1_data.get('initiative', 0)
         self.player2_initiative = player2_data.get('initiative', 0)
         self.rounds = 3
@@ -120,6 +119,27 @@ class FightingGame:
         self.training_weight = await self.bullshido_cog.config.guild(self.channel.guild).training_weight()
         self.diet_weight = await self.bullshido_cog.config.guild(self.channel.guild).diet_weight()
         self.damage_bonus_weight = await self.bullshido_cog.config.guild(self.channel.guild).damage_bonus_weight()
+
+    async def generate_fight_narrative(self):
+        if self.challenge:
+            return await asyncio.to_thread(
+                generate_hype_challenge_safe,
+                self.user_config,
+                str(self.player1.id),
+                str(self.player2.id),
+                self.player1.display_name,
+                self.player2.display_name,
+                self.wager,
+            )
+
+        return await asyncio.to_thread(
+            generate_hype_safe,
+            self.user_config,
+            str(self.player1.id),
+            str(self.player2.id),
+            self.player1.display_name,
+            self.player2.display_name,
+        )
     
     def determine_first_turn(self, attacker_training, attacker_initiative, defender_training, defender_initiative):
         # Determine who goes first based on training and recent activity initiative
@@ -135,6 +155,10 @@ class FightingGame:
     @staticmethod
     def calculate_max_stamina(player_data: dict):
         return 100 + (player_data.get('stamina_bonus', 0) * 5)
+
+    @staticmethod
+    def calculate_total_health(base_health: int, player_data: dict):
+        return base_health + (player_data.get('health_bonus', 0) * 10)
 
     @staticmethod
     def calculate_current_stamina(player_data: dict):
@@ -941,9 +965,9 @@ class FightingGame:
 
 
     async def start_game(self, ctx):
+        channel_id = self.channel.id
         try:
             # Check if a game is already in progress
-            channel_id = self.channel.id
             if FightingGame.is_game_active(channel_id):
                 await self.channel.send("A game is already in progress in this channel.")
                 return
@@ -967,10 +991,8 @@ class FightingGame:
             player2_data = await self.bullshido_cog.config.user(self.player2).all()
 
             # Get bonus values for each player, default to 0 if not present
-            player1_health_bonus = player1_data.get("health_bonus", 0)
             player1_damage_bonus = player1_data.get("damage_bonus", 0)
 
-            player2_health_bonus = player2_data.get("health_bonus", 0)
             player2_damage_bonus = player2_data.get("damage_bonus", 0)
 
             self.player1_max_stamina = self.calculate_max_stamina(player1_data)
@@ -979,8 +1001,8 @@ class FightingGame:
             self.player2_stamina = self.calculate_current_stamina(player2_data)
 
             # Apply bonuses to player stats
-            self.player1_health = self.base_health + player1_health_bonus
-            self.player2_health = self.base_health + player2_health_bonus
+            self.player1_health = self.calculate_total_health(self.base_health, player1_data)
+            self.player2_health = self.calculate_total_health(self.base_health, player2_data)
 
             self.player1_damage_bonus = player1_damage_bonus
             self.player2_damage_bonus = player2_damage_bonus
@@ -991,10 +1013,7 @@ class FightingGame:
             # Generate fight image and narrative
             fight_image_path = await self.generate_fight_image()
             image_url = await self.upload_image_and_get_url(fight_image_path)
-            if self.challenge:
-                narrative = generate_hype_challenge(self.user_config, str(self.player1.id), str(self.player2.id), self.player1.display_name, self.player2.display_name, self.wager)
-            else:
-                narrative = generate_hype(self.user_config, str(self.player1.id), str(self.player2.id), self.player1.display_name, self.player2.display_name)
+            narrative = await self.generate_fight_narrative()
 
             # Create and send embed message (no file attached, just the image URL)
             embed = discord.Embed(
@@ -1054,15 +1073,15 @@ class FightingGame:
             # Record the result
             await self.record_result(winner, loser, result_type)
 
-            # Set game as inactive and end the fight
-            FightingGame.set_game_active(channel_id, False)
             await self.end_fight(winner, loser)
 
             self.winner = winner  # Set the winner attribute based on the fight score
 
         except Exception as e:
-            self.bullshido_cog.logger.error(f"Error during start_game: {e}")
-            raise e
+            self.bullshido_cog.logger.exception(f"Error during start_game: {e}")
+            raise
+        finally:
+            FightingGame.set_game_active(channel_id, False)
 
     async def upload_image_and_get_url(self, image_path):
         # Upload the image to the channel and get the CDN URL

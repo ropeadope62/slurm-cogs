@@ -84,6 +84,11 @@ class Bullshido(commands.Cog):
         self.bg_task = self.bot.loop.create_task(self.check_inactivity())
         self.logger.info("Bullshido cog loaded.")
 
+    def cog_unload(self):
+        if hasattr(self, "bg_task") and self.bg_task and not self.bg_task.done():
+            self.bg_task.cancel()
+        self.logger.info("Bullshido cog unloaded.")
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
@@ -136,12 +141,20 @@ class Bullshido(commands.Cog):
             self.file_handler.setFormatter(formatter)
             self.logger.addHandler(self.file_handler)
 
+    @staticmethod
+    def calculate_total_stamina(stamina_level: int, stamina_bonus: int) -> int:
+        return stamina_level + (stamina_bonus * 5)
+
+    @staticmethod
+    def calculate_total_health(base_health: int, health_bonus: int) -> int:
+        return base_health + (health_bonus * 10)
+
     async def has_sufficient_stamina(self, user, required_stamina=20):
         """Check if the user has sufficient stamina to fight."""
         self.logger.info(f"Checking if {user} has sufficient stamina...")
         stamina = await self.config.user(user).stamina_level()
         stamina_bonus = await self.config.user(user).stamina_bonus()
-        total_stamina = stamina + (stamina_bonus * 5)
+        total_stamina = self.calculate_total_stamina(stamina, stamina_bonus)
         return total_stamina >= required_stamina
 
     async def add_permanent_injury(self, user: discord.Member, injury, body_part):
@@ -342,50 +355,77 @@ class Bullshido(commands.Cog):
     async def check_inactivity(self):
         self.logger.info("Checking for inactivity...")
         await self.bot.wait_until_ready()
-        while not self.bot.is_closed():
-            await self.apply_inactivity_penalties()
-            await asyncio.sleep(3600)  # Check every hour
+        try:
+            while not self.bot.is_closed():
+                await self.apply_inactivity_penalties()
+                await asyncio.sleep(3600)  # Check every hour
+        except asyncio.CancelledError:
+            self.logger.info("Inactivity check task cancelled.")
+            raise
 
     async def apply_inactivity_penalties(self):
         self.logger.info("Applying inactivity penalties...")
-        current_time = datetime.utcnow() 
+        current_time = datetime.utcnow()
         users = await self.config.all_users()
         for user_id, user_data in users.items():
             self.logger.info(f"Applying inactivity penalties for user {user_id}")
-            await self.apply_penalty(
-                user_id, user_data, current_time, "train", "training_level"
-            )
-            await self.apply_penalty(
-                user_id, user_data, current_time, "diet", "nutrition_level"
-            )
+            try:
+                await self.apply_penalty(
+                    user_id, user_data, current_time, "train", "training_level"
+                )
+                await self.apply_penalty(
+                    user_id, user_data, current_time, "diet", "nutrition_level"
+                )
+            except Exception as e:
+                self.logger.exception(
+                    f"Failed applying inactivity penalties for user {user_id}: {e}"
+                )
 
     async def apply_penalty(
         self, user_id, user_data, current_time, last_action_key, level_key
     ):
-        last_action = user_data.get(f"last_{last_action_key}")
-        if last_action:
+        try:
+            last_action = user_data.get(f"last_{last_action_key}")
+            if not last_action:
+                return
+
+            try:
+                normalized_user_id = int(user_id)
+            except (TypeError, ValueError):
+                normalized_user_id = user_id
+
             last_action_time = datetime.strptime(last_action, "%Y-%m-%d %H:%M:%S")
-            # Calculate how many full 48-hour periods have passed since last action
+            # Calculate how many full 24-hour periods have passed since last action
             time_diff = current_time - last_action_time
-            missed_periods = time_diff.days // 2  # 2 days = 48 hours
-            if missed_periods > 0:
-                # Apply penalty for each missed period
-                penalty = 20 * missed_periods
-                new_level = max(1, user_data[level_key] - penalty)
-                await self.config.user_from_id(user_id)[level_key].set(new_level)
-                self.logger.info(
-                    f"User {user_id} has lost {penalty} points in their {level_key.replace('_', ' ')} due to {missed_periods} missed 48-hour periods."
+            missed_periods = time_diff.days  # full days since last action
+            if missed_periods <= 0:
+                return
+
+            # Apply penalty for each missed day
+            penalty = 10 * missed_periods
+            new_level = max(1, user_data.get(level_key, 1) - penalty)
+            await self.config.user_from_id(normalized_user_id)[level_key].set(new_level)
+            self.logger.info(
+                f"User {normalized_user_id} has lost {penalty} points in their {level_key.replace('_', ' ')} due to {missed_periods} missed daily training/diet checks."
+            )
+
+            user = None
+            if isinstance(normalized_user_id, int):
+                user = self.bot.get_user(normalized_user_id)
+            if user:
+                await user.send(
+                    f"You've lost {penalty} points in your {level_key.replace('_', ' ')} due to inactivity ({missed_periods} missed daily checks)."
                 )
-                user = self.bot.get_user(user_id)
-                if user:
-                    await user.send(
-                        f"You've lost {penalty} points in your {level_key.replace('_', ' ')} due to inactivity ({missed_periods} missed 48-hour periods)."
-                    )
-                # Update last_action time to the most recent penalty time
-                new_last_action_time = last_action_time + timedelta(days=missed_periods * 2)
-                await self.config.user_from_id(user_id)[f"last_{last_action_key}"].set(
-                    new_last_action_time.strftime("%Y-%m-%d %H:%M:%S")
-                )
+
+            # Update last_action time to the most recent penalty window
+            new_last_action_time = last_action_time + timedelta(days=missed_periods)
+            await self.config.user_from_id(normalized_user_id)[f"last_{last_action_key}"].set(
+                new_last_action_time.strftime("%Y-%m-%d %H:%M:%S")
+            )
+        except Exception:
+            self.logger.exception(
+                f"Error calculating inactivity penalty for user {user_id} on {last_action_key}"
+            )
 
     async def update_intimidation_level(self, user: discord.Member):
         self.logger.info(f"Updating intimidation level for {user}")
@@ -505,8 +545,8 @@ class Bullshido(commands.Cog):
         if current_mode:
             await self.config.guild(guild).socialized_medicine.set(False)
             await self.config.guild(guild).socialized_medicine_payer_id.set(None)
-            await ctx.send(f"Payment mode set to individual payment by each user.")
-            self.logger.info(f"Socialized medicine mode disabled.")
+            await ctx.send("Payment mode set to individual payment by each user.")
+            self.logger.info("Socialized medicine mode disabled.")
         else:
             if not single_payer:
                 await ctx.send(
@@ -757,7 +797,7 @@ class Bullshido(commands.Cog):
             return
 
         # Send the challenge message
-        challenge_message = await ctx.send(
+        await ctx.send(
             f"{opponent.mention}, you have been challenged by {challenger.mention} to a fight who has put up {bet} {currency}. Do you accept? (yes/no)"
         )
 
@@ -1096,7 +1136,7 @@ class Bullshido(commands.Cog):
             color=0xFF0000,
         )
         embed.set_thumbnail(url="https://i.ibb.co/7KK90YH/bullshido.png")
-        self.logger.info(f"Listing available fighting styles.")
+        self.logger.info("Listing available fighting styles.")
         await ctx.send(embed=embed)
 
     @bullshido_group.command(
@@ -1420,7 +1460,7 @@ class Bullshido(commands.Cog):
     async def reset_config(self, ctx: commands.Context):
         """Resets Bullshido configuration to default values."""
         await self.config.clear_all_users()
-        self.logger.info(f"Cleared all user stats.")
+        self.logger.info("Cleared all user stats.")
         await ctx.send("Bullshido configuration has been reset to default values.")
 
     @bullshido_group.command(
@@ -1445,14 +1485,15 @@ class Bullshido(commands.Cog):
             training_level = await self.config.user(user).training_level()
             nutrition_level = await self.config.user(user).nutrition_level()
             health_bonus = await self.config.user(user).health_bonus()
-            player_health = 100 + health_bonus
+            base_health = await self.config.guild(ctx.guild).base_health()
+            player_health = self.calculate_total_health(base_health, health_bonus)
             morale = await self.config.user(user).morale()
             intimidation_level = await self.config.user(user).intimidation_level()
             initiative = await self.config.user(user).initiative()
             fighting_style = await self.config.user(user).fighting_style()
             stamina = await self.config.user(user).stamina_level()
             stamina_bonus = await self.config.user(user).stamina_bonus()
-            player_stamina = stamina + (stamina_bonus * 5)
+            player_stamina = self.calculate_total_stamina(stamina, stamina_bonus)
             player_damage_bonus = await self.config.user(user).damage_bonus()
             level_up_points_to_distribute = await self.config.user(
                 user
@@ -1464,11 +1505,6 @@ class Bullshido(commands.Cog):
             total_losses = sum(losses.values())
 
             xp_bar = self.create_xp_bar(current_xp, level, next_level_xp)
-            xp_info = (
-                f"{current_xp} / {next_level_xp} XP"
-                if next_level_xp is not None
-                else f"{current_xp} XP (Max Level)"
-            )
 
             embed = discord.Embed(
                 title=f"{user.display_name}'s Fight Record", color=0xFF0000
@@ -1611,7 +1647,7 @@ class Bullshido(commands.Cog):
     async def clear_old_config(self, ctx: commands.Context):
         """Clears old configuration to avoid conflicts."""
         await self.config.clear_all_users()
-        self.logger.info(f"Cleared all user stats.")
+        self.logger.info("Cleared all user stats.")
         await ctx.send("Old Bullshido configuration has been cleared.")
 
     @bullshido_group.command(name="test_fight_image")
