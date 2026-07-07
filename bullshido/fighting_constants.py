@@ -450,9 +450,9 @@ STRIKES = {
 BODY_PARTS = [
     "head", "chest", "left arm", "right arm", "nose", "neck", "left ear", "right ear",
     "teeth", "left leg", "right leg", "right foot", "left foot", "liver", "kidneys",
-    "spine", "clavical", "left hip", "right hip", "left knee", "right knee", "solar plexus",
-    "cranium", "kisser", "chin", "left shoulder", "right shoulder", "ass", "crotch", "spine", "ribs", "spinal column",
-    "left ankle", "right ankle", "jaw", "left eye", "right eye", "stomach", "temple", "forehead", "mid-section","stomach",
+    "spine", "clavicle", "left hip", "right hip", "left knee", "right knee", "solar plexus",
+    "cranium", "kisser", "chin", "left shoulder", "right shoulder", "ass", "crotch", "ribs", "spinal column",
+    "left ankle", "right ankle", "jaw", "left eye", "right eye", "stomach", "temple", "forehead", "mid-section",
     "throat", "ribcage", "butt"
 ]
 BODY_PART_INJURIES = {

@@ -14,6 +14,7 @@ if load_dotenv:
     load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("BULLSHIDO_OPENAI_MODEL", "gpt-4o-mini")
 AI_AVAILABLE = bool(OPENAI_API_KEY and OpenAI is not None)
 
 client = OpenAI(api_key=OPENAI_API_KEY) if AI_AVAILABLE else None
@@ -81,7 +82,7 @@ def _get_fighter_summaries(
 
 def _create_hype_completion(prompt: str, system_prompt: str):
     response = client.chat.completions.create(
-        model="gpt-5.4-mini",
+        model=OPENAI_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},

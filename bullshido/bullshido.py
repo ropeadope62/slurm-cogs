@@ -59,6 +59,7 @@ class Bullshido(commands.Cog):
             "last_diet": None,
             "fight_history": [],
             "permanent_injuries": [],
+            "injured_body_parts": [],
             "taunts": [],
         }
 
@@ -160,12 +161,18 @@ class Bullshido(commands.Cog):
     async def add_permanent_injury(self, user: discord.Member, injury, body_part):
         """Add a permanent injury to a user."""
         user_data = await self.config.user(user).all()
-        if "permanent_injuries" not in user_data:
+        if not isinstance(user_data.get("permanent_injuries"), list):
             user_data["permanent_injuries"] = []
+        if not isinstance(user_data.get("injured_body_parts"), list):
+            user_data["injured_body_parts"] = []
         user_data["permanent_injuries"].append(f"{injury}")
+        user_data["injured_body_parts"].append(body_part)
         self.logger.info(f"Adding permanent injury {injury} to {user}.")
         await self.config.user(user).permanent_injuries.set(
             user_data["permanent_injuries"]
+        )
+        await self.config.user(user).injured_body_parts.set(
+            user_data["injured_body_parts"]
         )
 
     async def get_permanent_injuries(self, user: discord.Member):
@@ -178,9 +185,18 @@ class Bullshido(commands.Cog):
     ):
         """Remove a permanent injury from a user."""
         self.logger.info(f"Removing permanent injury {injury} from {user}.")
-        async with self.config.user(user).permanent_injuries() as injuries:
-            if injury in injuries:
-                injuries.remove(injury)
+        user_data = await self.config.user(user).all()
+        injuries = user_data.get("permanent_injuries", [])
+        body_parts = user_data.get("injured_body_parts", [])
+
+        if injury in injuries:
+            injury_index = injuries.index(injury)
+            injuries.pop(injury_index)
+            if injury_index < len(body_parts):
+                body_parts.pop(injury_index)
+
+        await self.config.user(user).permanent_injuries.set(injuries)
+        await self.config.user(user).injured_body_parts.set(body_parts)
 
     def is_admin_or_mod():
         async def predicate(ctx):
@@ -781,6 +797,17 @@ class Bullshido(commands.Cog):
         """Challenge another player to a fight with a bet."""
         challenger = ctx.author
         currency = await bank.get_currency_name(ctx.guild)
+        challenger_data = await self.config.user(challenger).all()
+        opponent_data = await self.config.user(opponent).all()
+
+        if bet <= 0:
+            await ctx.send("The wager must be greater than 0.")
+            return
+
+        if not await self.validate_fight_conditions(
+            ctx, challenger, opponent, challenger_data, opponent_data
+        ):
+            return
 
         # Check if the challenger has enough credits
         if not await bank.can_spend(challenger, bet):
@@ -820,25 +847,35 @@ class Bullshido(commands.Cog):
             return
 
         # Deduct the bet amount from both users
-        await bank.withdraw_credits(challenger, bet)
-        await bank.withdraw_credits(opponent, bet)
+        wagers_collected = False
+        try:
+            await bank.withdraw_credits(challenger, bet)
+            await bank.withdraw_credits(opponent, bet)
+            wagers_collected = True
 
-        # Store the total pot
-        pot = bet * 2
+            # Store the total pot
+            pot = bet * 2
 
-        # Start the fight
-        fighting_game = FightingGame(
-            self.bot,
-            ctx.channel,
-            challenger,
-            opponent,
-            await self.config.user(challenger).all(),
-            await self.config.user(opponent).all(),
-            self,
-            wager=bet,
-            challenge=True,
-        )
-        await fighting_game.start_game(ctx)
+            # Start the fight
+            fighting_game = FightingGame(
+                self.bot,
+                ctx.channel,
+                challenger,
+                opponent,
+                challenger_data,
+                opponent_data,
+                self,
+                wager=bet,
+                challenge=True,
+            )
+            await fighting_game.start_game(ctx)
+        except Exception as e:
+            if wagers_collected:
+                await bank.deposit_credits(challenger, bet)
+                await bank.deposit_credits(opponent, bet)
+            self.logger.exception(f"Challenge fight failed and wagers were refunded: {e}")
+            await ctx.send("The fight could not be completed. Any wagers were refunded.")
+            return
 
         # Determine the winner and transfer the pot
         winner = fighting_game.winner
@@ -996,17 +1033,26 @@ class Bullshido(commands.Cog):
             user = ctx.author
         user_data = await self.config.user(user).all()
         permanent_injuries = user_data.get("permanent_injuries", [])
+        injured_body_parts = user_data.get("injured_body_parts", [])
         self.logger.info(f"Getting permanent injuries for {user}.")
 
         if not permanent_injuries:
             await ctx.send("You have no permanent injuries.")
             return
 
+        formatted_injuries = []
+        for index, injury in enumerate(permanent_injuries):
+            body_part = injured_body_parts[index] if index < len(injured_body_parts) else None
+            if body_part:
+                formatted_injuries.append(f"{injury} ({body_part})")
+            else:
+                formatted_injuries.append(injury)
+
         embed = discord.Embed(
             title=f"{user.display_name}'s Permanent Injuries", color=0xFF0000
         )
         embed.add_field(
-            name="Injuries", value=", ".join(permanent_injuries), inline=False
+            name="Injuries", value=", ".join(formatted_injuries), inline=False
         )
 
         embed.set_thumbnail(url="https://i.ibb.co/7KK90YH/bullshido.png")
@@ -1025,6 +1071,7 @@ class Bullshido(commands.Cog):
 
         user_data = await self.config.user(user).all()
         permanent_injuries = user_data.get("permanent_injuries", [])
+        injured_body_parts = user_data.get("injured_body_parts", [])
 
         if injury not in permanent_injuries:
             await ctx.send(
@@ -1071,8 +1118,12 @@ class Bullshido(commands.Cog):
             )
 
         # Code to remove the specified injury from user config
-        permanent_injuries.remove(injury)
+        injury_index = permanent_injuries.index(injury)
+        permanent_injuries.pop(injury_index)
+        if injury_index < len(injured_body_parts):
+            injured_body_parts.pop(injury_index)
         await self.config.user(user).permanent_injuries.set(permanent_injuries)
+        await self.config.user(user).injured_body_parts.set(injured_body_parts)
         self.logger.info(f"{user} has successfully treated their {injury}.")
         await ctx.send(f"{user.display_name}'s {injury} has been successfully treated.")
 
@@ -1598,6 +1649,12 @@ class Bullshido(commands.Cog):
             "intimidation_level": intimidation_level,
             "initiative": initiative,
             "fight_history": fight_history,
+            "damage_bonus": await self.config.user(user).damage_bonus(),
+            "stamina_bonus": await self.config.user(user).stamina_bonus(),
+            "health_bonus": await self.config.user(user).health_bonus(),
+            "stamina_level": await self.config.user(user).stamina_level(),
+            "permanent_injuries": await self.config.user(user).permanent_injuries(),
+            "injured_body_parts": await self.config.user(user).injured_body_parts(),
         }
 
     async def update_player_stats(self, user, win, result_type, opponent_name):
@@ -1675,7 +1732,8 @@ class Bullshido(commands.Cog):
                 "last_train": None,
                 "last_diet": None,
                 "fight_history": [],
-                "permanent_injuries": {},
+                "permanent_injuries": [],
+                "injured_body_parts": [],
             }
 
             player2_data = {
@@ -1694,7 +1752,8 @@ class Bullshido(commands.Cog):
                 "last_train": None,
                 "last_diet": None,
                 "fight_history": [],
-                "permanent_injuries": {},
+                "permanent_injuries": [],
+                "injured_body_parts": [],
             }
 
             # Initialize the FightingGame instance with dummy data for testing

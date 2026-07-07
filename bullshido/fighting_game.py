@@ -12,6 +12,8 @@ from .fighting_constants import (
     ROUND_RESULTS_WIN, ROUND_RESULTS_CLOSE, TKO_MESSAGE_FINALES, KO_VICTOR_FLAVOR
 )
 from .bullshido_ai import generate_hype_safe, generate_hype_challenge_safe
+
+
 class FightingGame:
     active_games = {}
 
@@ -26,10 +28,12 @@ class FightingGame:
         self.player2_data = player2_data
         self.player1_max_stamina = self.calculate_max_stamina(player1_data)
         self.player2_max_stamina = self.calculate_max_stamina(player2_data)
+        self.player1_max_health = self.calculate_total_health(100, self.player1_data)
+        self.player2_max_health = self.calculate_total_health(100, self.player2_data)
         self.player1_stamina = self.calculate_current_stamina(player1_data)
         self.player2_stamina = self.calculate_current_stamina(player2_data)
-        self.player1_health = self.calculate_total_health(100, self.player1_data)
-        self.player2_health = self.calculate_total_health(100, self.player2_data)
+        self.player1_health = self.player1_max_health
+        self.player2_health = self.player2_max_health
         self.player1_initiative = player1_data.get('initiative', 0)
         self.player2_initiative = player2_data.get('initiative', 0)
         self.rounds = 3
@@ -40,9 +44,9 @@ class FightingGame:
         self.winner = None
         self.wager = wager
         self.challenge = challenge
-        self.training_weight = None
-        self.diet_weight = None
-        self.damage_bonus_weight = None
+        self.training_weight = 0.5
+        self.diet_weight = 0.3
+        self.damage_bonus_weight = 0.5
         self.player1_critical_message = ""
         self.player2_critical_message = ""
         self.player1_critical_injuries = []
@@ -56,6 +60,8 @@ class FightingGame:
         self.ACTION_COST = 10
         self.BASE_MISS_PROBABILITY = 0.15
         self.BASE_STAMINA_COST = 10
+        self.CRITICAL_CHANCE = 0.1
+        self.PERMANENT_INJURY_CHANCE = 0.5
         self.FIGHT_TEMPLATE_PATH = os.path.join(
             os.path.dirname(__file__), "bullshido_template.png"
         )
@@ -286,15 +292,18 @@ class FightingGame:
         # Return the path to the final image
         return final_image_path
     
-    def create_health_bar(self, current_health, base_health):
+    def create_health_bar(self, current_health, max_health):
         # Calculate the progress of the health bar
-        progress = current_health / base_health
+        if max_health <= 0:
+            progress = 0
+        else:
+            progress = min(max(current_health / max_health, 0), 1)
         progress_bar_length = 30
         progress_bar_filled = int(progress * progress_bar_length)
         
         # Create the progress bar string
         progress_bar = "[" + ("=" * progress_bar_filled)
-        progress_bar += "=" * (progress_bar_length - progress_bar_filled) + "]"
+        progress_bar += "-" * (progress_bar_length - progress_bar_filled) + "]"
         
         # Add a marker to indicate the current health level
         if progress_bar_filled < progress_bar_length:
@@ -318,8 +327,8 @@ class FightingGame:
             return
 
         # Create health bars for player 1 and player 2
-        player1_health_bar = self.create_health_bar(self.player1_health, self.base_health)
-        player2_health_bar = self.create_health_bar(self.player2_health, self.base_health)
+        player1_health_bar = self.create_health_bar(self.player1_health, self.player1_max_health)
+        player2_health_bar = self.create_health_bar(self.player2_health, self.player2_max_health)
 
         # Get stamina status for player 1 and player 2
         player1_stamina_status = self.get_stamina_status(self.player1_stamina)
@@ -397,7 +406,14 @@ class FightingGame:
 
         # Calculate the adjusted damage
         adjusted_damage = base_damage * diminished_multiplier
-        print(f"Adjusted Damage: {adjusted_damage} based on base damage: {base_damage}, training bonus: {training_bonus}, diet bonus: {diet_bonus}, damage bonus: {scaled_damage_bonus}")
+        self.bullshido_cog.logger.debug(
+            "Adjusted damage %.2f from base=%s training_bonus=%.3f diet_bonus=%.3f damage_bonus=%.3f",
+            adjusted_damage,
+            base_damage,
+            training_bonus,
+            diet_bonus,
+            scaled_damage_bonus,
+        )
         # Round the adjusted damage to the nearest integer
         return round(adjusted_damage)
     
@@ -475,7 +491,8 @@ class FightingGame:
                         critical_injury = f"Permanent Injury: {critical_injury}"
 
             # Check if the defender has a permanent injury on the body part
-            if body_part in defender_data.get('permanent_injuries', []):
+            injured_body_parts = defender_data.get('injured_body_parts', [])
+            if body_part in injured_body_parts:
                 # Double the modified damage if the defender has a permanent injury on the body part
                 modified_damage *= 2
                 strike_injured_bodypart_message = f"🔥**{attacker.display_name}'s {strike} hits {defender.display_name}'s already injured {body_part}, causing double damage!🔥**"
@@ -620,7 +637,7 @@ class FightingGame:
                 return True
 
             injury_message = ""
-            if bodypart in defender_data.get('permanent_injuries', []):
+            if bodypart in defender_data.get('injured_body_parts', []):
                 # Attacker's strike hits a previously injured body part, causing double damage
                 injury_message = f"{attacker}'s {strike} hits {defender}'s already injured {bodypart}, causing double damage!"
 
@@ -637,7 +654,7 @@ class FightingGame:
             if self.current_turn == self.player1:
                 # Update player 2's health and player 1's stamina
                 self.player2_health -= damage
-                self.player1_stamina -= stamina_cost
+                self.player1_stamina = max(0, self.player1_stamina - stamina_cost)
                 self.current_turn = self.player2
                 if critical_injury:
                     # Add critical injury to player 2 if applicable
@@ -649,7 +666,7 @@ class FightingGame:
             else:
                 # Update player 1's health and player 2's stamina
                 self.player1_health -= damage
-                self.player2_stamina -= stamina_cost
+                self.player2_stamina = max(0, self.player2_stamina - stamina_cost)
                 self.current_turn = self.player1
                 if critical_injury:
                     # Add critical injury to player 1 if applicable
@@ -677,6 +694,13 @@ class FightingGame:
                 return True
 
             # Check for TKO
+            if attacker == self.player1:
+                attacker_stamina = self.player1_stamina
+                defender_stamina = self.player2_stamina
+            else:
+                attacker_stamina = self.player2_stamina
+                defender_stamina = self.player1_stamina
+
             tko_probability = self.calculate_tko_probability(attacker_stamina, attacker_training, defender_training, defender_stamina, attacker_intimidation, defender_intimidation)
             tko_roll = random.random()
 
@@ -718,12 +742,16 @@ class FightingGame:
         user_data = self.user_config[str(user.id)]
         
         # Check if the user has any permanent injuries, if not, create a list
-        if "permanent_injuries" not in user_data:
+        if not isinstance(user_data.get("permanent_injuries"), list):
             user_data["permanent_injuries"] = []
+        if not isinstance(user_data.get("injured_body_parts"), list):
+            user_data["injured_body_parts"] = []
             
         # Add the permanent injury to the user's data
         user_data["permanent_injuries"].append(f"{injury}")
+        user_data["injured_body_parts"].append(body_part)
         await self.bullshido_cog.config.user(user).permanent_injuries.set(user_data["permanent_injuries"])
+        await self.bullshido_cog.config.user(user).injured_body_parts.set(user_data["injured_body_parts"])
 
     def calculate_post_fight_stamina(self, user_data: dict, remaining_stamina: float, max_stamina: int, outcome: str):
         training_level = user_data.get("training_level", 1)
@@ -989,6 +1017,12 @@ class FightingGame:
             # Get player data from user configuration
             player1_data = await self.bullshido_cog.config.user(self.player1).all()
             player2_data = await self.bullshido_cog.config.user(self.player2).all()
+            self.player1_data = player1_data
+            self.player2_data = player2_data
+            self.user_config = {
+                str(self.player1.id): self.player1_data,
+                str(self.player2.id): self.player2_data,
+            }
 
             # Get bonus values for each player, default to 0 if not present
             player1_damage_bonus = player1_data.get("damage_bonus", 0)
@@ -997,12 +1031,14 @@ class FightingGame:
 
             self.player1_max_stamina = self.calculate_max_stamina(player1_data)
             self.player2_max_stamina = self.calculate_max_stamina(player2_data)
+            self.player1_max_health = self.calculate_total_health(self.base_health, player1_data)
+            self.player2_max_health = self.calculate_total_health(self.base_health, player2_data)
             self.player1_stamina = self.calculate_current_stamina(player1_data)
             self.player2_stamina = self.calculate_current_stamina(player2_data)
 
             # Apply bonuses to player stats
-            self.player1_health = self.calculate_total_health(self.base_health, player1_data)
-            self.player2_health = self.calculate_total_health(self.base_health, player2_data)
+            self.player1_health = self.player1_max_health
+            self.player2_health = self.player2_max_health
 
             self.player1_damage_bonus = player1_damage_bonus
             self.player2_damage_bonus = player2_damage_bonus
